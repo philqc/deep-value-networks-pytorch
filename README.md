@@ -18,6 +18,10 @@
 * Feature network (INFNET & SPEN): <br /> Multi-layer perceptron that computes a feature representation
 of the inputs. Also can be used as a baseline model
 * Deep Value Networks: Almost completed. <br /> Missing:
-  * Generating adversarial tuples 
   * Parallel inference. 
   * Reproduction of the authors' results on the Weizmann horses dataset.
+  
+
+### Reproducibility ###
+We could easily reproduce the authors' results with the DVN on Bibtex (F1 of 44.07% on the test set) :
+<img src="bibtex_dvn_comparisons.png" width="80%">
