@@ -10,6 +10,7 @@ import time
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
+import pickle
 
 
 class SPEN(nn.Module):
@@ -93,24 +94,41 @@ class SPEN(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, inputs, targets, use_cuda, batch_size, batch_size_eval,
+    def __init__(self, inputs, targets, use_cuda, add_adversarial=True,
+                 add_ground_truth=False, stratified_sampling=False, batch_size=32, batch_size_eval=32,
                  learning_rate=1e-3, inf_lr=0.5, feature_dim=1836, label_dim=159,
                  num_hidden=None, num_pairwise=16, non_linearity=nn.Softplus()):
         """
         Parameters
         ----------
-        device:
-            cuda or cpu
+        use_cuda: boolean
+            true if we are using gpu, false if using cpu
         learning_rate : float
             learning rate for updating the value network parameters
         inf_lr : float
             learning rate for the inference procedure
+        add_adversarial: bool
+            Generate adversarial tuples while training.
+            (Usually outperforms stratified sampling and adding ground truth)
+        stratified_sampling: bool (Not yet implemented)
+            Sample y proportional to its exponential oracle value.
+            Sample from the exponentiated value distribution using stratified sampling.
+        add_ground_truth: bool
+            Simply add the ground truth outputs y* with some probably p while training.
         """
 
         if use_cuda:
             self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
+
+        self.add_adversarial = add_adversarial
+        self.add_ground_truth = add_ground_truth
+        self.stratified_sampling = stratified_sampling
+        if self.stratified_sampling:
+            raise ValueError('Stratified sampling is not yet implemented!')
+        if self.add_ground_truth and self.add_adversarial:
+            raise ValueError('Adversarial examples and Adding Ground Truth are both set to true !')
 
         self.feature_dim = feature_dim
         self.num_pairwise = num_pairwise
@@ -119,11 +137,11 @@ class DeepValueNetwork:
         self.inf_lr = inf_lr
 
         # Deep Value Network is just a SPEN
-        self.DVN = SPEN(feature_dim, label_dim, num_hidden,
-                        num_pairwise, non_linearity).to(self.device)
+        self.model = SPEN(feature_dim, label_dim, num_hidden,
+                          num_pairwise, non_linearity).to(self.device)
 
         self.loss_fn = nn.BCEWithLogitsLoss()
-        self.optimizer = torch.optim.Adam(self.DVN.parameters(), lr=learning_rate)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
 
         self.batch_size = batch_size
         self.batch_size_eval = batch_size_eval
@@ -156,7 +174,8 @@ class DeepValueNetwork:
     def get_oracle_value(self, pred_labels, gt_labels):
         """
         Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels.
+        of some predicted labels, where v*(y, y*)
+        is the relaxed version of the F1 Score.
         """
         if pred_labels.shape != gt_labels.shape:
             raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
@@ -167,19 +186,15 @@ class DeepValueNetwork:
             pred_labels = torch.where(pred_labels >= 0.5, torch.ones(1), torch.zeros(1))
             pred_labels = pred_labels.float()
 
-        intersect = torch.zeros(pred_labels.size()[0], 1).to(self.device)
-        union = torch.zeros(pred_labels.size()[0], 1).to(self.device)
+        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
+        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
 
-        # We have Batch_size x L labels
-        for batch, (p_label, true_label) in enumerate(zip(pred_labels, gt_labels)):
-            for i in range(len(p_label)):
-                intersect[batch, 0] += min(p_label[i], true_label[i])
-                union[batch, 0] += max(p_label[i], true_label[i])
+        # for numerical stability
+        epsilon = torch.full(union.size(), 10 ** -8)
 
-        relaxed_f1 = torch.zeros(pred_labels.size()[0], 1, dtype=torch.float32).to(self.device)
-        for batch in range(len(pred_labels)):
-            relaxed_f1[batch, 0] = 2 * intersect[batch, 0] / float(intersect[batch, 0] + max(10 ** -8, union[batch, 0]))
-
+        relaxed_f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
+        # we want a (Batch_size x 1) tensor
+        relaxed_f1 = relaxed_f1.view(-1, 1)
         return relaxed_f1
 
     def get_ini_labels(self, x, gt_labels=None):
@@ -187,7 +202,6 @@ class DeepValueNetwork:
         Get the tensor of predicted labels
         that we will do inference on
         """
-
         y = torch.zeros(x.size()[0], self.label_dim,
                         dtype=torch.float32, device=self.device)
 
@@ -207,20 +221,17 @@ class DeepValueNetwork:
         techniques to generate the output
         1) Gradient based inference
         2) Simply add the ground truth outputs
-        2) TODO: Generating adversarial tuples (DOESN'T WORK !)
-        3) TODO: Random samples from Y, biased towards y*
+        2) Generating adversarial tuples
+        3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
 
-        adversarial = False
-        use_ground_truth = True
-        # both can't be true !
-        assert not use_ground_truth or not adversarial
-
-        # In training: Generate adversarial examples 50% of the time
-        if adversarial and self.training and np.random.rand() >= 0.5:
+        if self.add_adversarial and self.training and np.random.rand() >= 0.5:
+            # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             pred_labels = self.inference(x, init_labels, gt_labels=gt_labels, num_iterations=1)
-        elif use_ground_truth and self.training and np.random.rand() >= 0.5:
+        elif self.add_ground_truth and self.training and np.random.rand() >= 0.5:
+            # In training: If add_ground_truth=True, add ground truth outputs
+            # to provide some positive examples to the network
             pred_labels = gt_labels
         else:
             init_labels = self.get_ini_labels(x)
@@ -231,7 +242,7 @@ class DeepValueNetwork:
     def inference(self, x, y, gt_labels=None, num_iterations=20):
 
         if self.training:
-            self.DVN.eval()
+            self.model.eval()
 
         with torch.enable_grad():
 
@@ -239,11 +250,11 @@ class DeepValueNetwork:
 
                 if gt_labels is not None:  # Adversarial
                     oracle = self.get_oracle_value(y, gt_labels)
-                    output = self.DVN(x, y)
+                    output = self.model(x, y)
                     # this is the BCE loss with logits
                     value = self.loss_fn(output, oracle)
                 else:
-                    output = self.DVN(x, y)
+                    output = self.model(x, y)
                     value = torch.sigmoid(output)
 
                 grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value),
@@ -255,12 +266,13 @@ class DeepValueNetwork:
                 y = torch.clamp(y, 0, 1)
 
         if self.training:
-            self.DVN.train()
+            self.model.train()
+
         return y
 
     def train(self, ep):
 
-        self.DVN.train()
+        self.model.train()
         self.training = True
 
         time_start = time.time()
@@ -273,11 +285,11 @@ class DeepValueNetwork:
 
             t_size += len(inputs)
 
-            self.DVN.zero_grad()
+            self.model.zero_grad()
 
             pred_labels = self.generate_output(inputs, targets)
             oracle = self.get_oracle_value(pred_labels, targets)
-            output = self.DVN(inputs, pred_labels)
+            output = self.model(inputs, pred_labels)
 
             loss = self.loss_fn(output, oracle)
             t_loss += loss.item()
@@ -285,12 +297,10 @@ class DeepValueNetwork:
             loss.backward()
             self.optimizer.step()
 
-            if batch_idx % 5 == 0:
-                # print('output = ', output, 'loss =', loss)
+            if batch_idx % 10 == 0:
                 print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; Avg_Loss = {:.5f}'
                       ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
-                                (self.n_train / t_size) * (time.time() - time_start),
-                                t_loss / t_size),
+                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size),
                       end='')
 
         t_loss /= t_size
@@ -298,23 +308,23 @@ class DeepValueNetwork:
         print('')
         return t_loss
 
-    def valid(self):
+    def valid(self, loader, test_set=False):
 
-        self.DVN.eval()
+        self.model.eval()
         self.training = False
 
         loss, t_size = 0, 0
         mean_f1 = []
 
         with torch.no_grad():
-            for (inputs, targets) in self.valid_loader:
+            for (inputs, targets) in loader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
                 y_prediction = self.generate_output(inputs, targets)
                 oracle = self.get_oracle_value(y_prediction, targets)
-                output = self.DVN(inputs, y_prediction)
+                output = self.model(inputs, y_prediction)
 
                 loss += self.loss_fn(oracle, output)
 
@@ -326,8 +336,13 @@ class DeepValueNetwork:
 
         mean_f1 = np.mean(mean_f1)
         loss /= t_size
-        print('Validation set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-              ''.format(loss.item(), 100 * mean_f1))
+
+        if test_set:
+            print('Test set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
+                  ''.format(loss.item(), 100 * mean_f1))
+        else:
+            print('Validation set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
+                  ''.format(loss.item(), 100 * mean_f1))
 
         return loss.item(), mean_f1
 
@@ -342,22 +357,46 @@ if __name__ == "__main__":
     else:
         use_cuda = False
 
+    print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
 
     DVN = DeepValueNetwork(train_inputs, train_labels, use_cuda,
+                           add_adversarial=False, add_ground_truth=True,
                            batch_size=32, batch_size_eval=32)
 
-    # Decay the learning rate by factor of gamma every step_size # of epochs
+    # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)
 
-    results = {'loss_train': [], 'loss_valid': [], 'f1_valid': []}
-    for epoch in range(90):
+    results = {'name': 'DVN_Inference_and_Ground_Truth', 'loss_train': [],
+               'loss_valid': [], 'f1_valid': []}
+
+    save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
+
+    for epoch in range(60):
         loss_train = DVN.train(epoch)
-        loss_valid, mean_f1 = DVN.valid()
+        loss_valid, f1_valid = DVN.valid(DVN.valid_loader)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
-        results['f1_valid'].append(mean_f1)
+        results['f1_valid'].append(f1_valid)
+
+        with open(save_results_file, 'wb') as fout:
+            pickle.dump(results, fout)
 
     plot_results(results)
+    torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+
+    do_test_set = True
+    if do_test_set:
+        # Testing phase
+        print('Loading Test set...')
+        test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
+        test_data = MyDataset(test_inputs, test_labels)
+        test_loader = DataLoader(
+            test_data,
+            batch_size=DVN.batch_size_eval,
+            pin_memory=use_cuda
+        )
+        print('Computing the F1 Score on the test set...')
+        loss_test, f1_test = DVN.valid(test_loader, test_set=True)
 

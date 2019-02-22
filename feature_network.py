@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-from load_bibtex import get_bibtex
+from load_bibtex import get_bibtex, test_model_bibtex
 from auxiliary_functions import *
 
 
@@ -158,16 +158,17 @@ class FeatureNetwork:
         outputs = []
         loss, t_size = 0, 0
 
-        for (inputs, targets) in test_loader:
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            inputs = inputs.float()
-            t_size += len(inputs)
+        with torch.no_grad():
+            for (inputs, targets) in test_loader:
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                inputs = inputs.float()
+                t_size += len(inputs)
 
-            output = self.model(inputs)
-            loss += self.model.loss_fn(output.float(), targets.float())
+                output = self.model(inputs)
+                loss += self.model.loss_fn(output.float(), targets.float())
 
-            output_in_0_1 = output.round().int()
-            outputs.append(output_in_0_1)
+                output_in_0_1 = output.round().int()
+                outputs.append(output_in_0_1)
 
         loss /= t_size
 
@@ -214,17 +215,20 @@ if __name__ == "__main__":
         results['f1_valid'].append(mean_f1)
 
     # Testing phase
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
-    test_data = MyDataset(test_inputs, test_labels)
-    test_loader = DataLoader(
-        test_data,
-        batch_size=F_Net.batch_size_eval,
-        pin_memory=use_cuda
-    )
+    testing = False
+    if testing:
+        print('Loading Test set...')
+        test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
+        test_data = MyDataset(test_inputs, test_labels)
+        test_loader = DataLoader(
+            test_data,
+            batch_size=F_Net.batch_size_eval,
+            pin_memory=use_cuda
+        )
+        print('Computing the F1 Score on the test set...')
+        loss_test, f1_test = F_Net.test(test_loader, test_labels)
 
-    loss_test, f1_test = F_Net.test(test_loader, test_labels)
+    # Plot results and save the model
     plot_results(results)
-
-    torch.save(F_Net.model.state_dict(), dir_path + '/model.pth')
-
+    torch.save(F_Net.model.state_dict(), dir_path + '/bibtex_feature_network.pth')
 
