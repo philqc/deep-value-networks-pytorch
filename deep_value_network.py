@@ -93,9 +93,9 @@ class SPEN(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, inputs, targets, use_cuda, learning_rate=1e-3, inf_lr=0.5,
-                 feature_dim=1836, label_dim=159, num_hidden=None,
-                 num_pairwise=16, non_linearity=nn.Softplus()):
+    def __init__(self, inputs, targets, use_cuda, batch_size, batch_size_eval,
+                 learning_rate=1e-3, inf_lr=0.5, feature_dim=1836, label_dim=159,
+                 num_hidden=None, num_pairwise=16, non_linearity=nn.Softplus()):
         """
         Parameters
         ----------
@@ -125,8 +125,8 @@ class DeepValueNetwork:
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.optimizer = torch.optim.Adam(self.DVN.parameters(), lr=learning_rate)
 
-        self.batch_size = 32
-        self.batch_size_eval = 32
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval
 
         self.n_train = int(len(inputs) * 0.90)
         self.n_valid = len(inputs) - self.n_train
@@ -344,13 +344,17 @@ if __name__ == "__main__":
 
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
 
-    DVN = DeepValueNetwork(train_inputs, train_labels, use_cuda)
+    DVN = DeepValueNetwork(train_inputs, train_labels, use_cuda,
+                           batch_size=32, batch_size_eval=32)
+
+    # Decay the learning rate by factor of gamma every step_size # of epochs
+    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)
 
     results = {'loss_train': [], 'loss_valid': [], 'f1_valid': []}
-    for epoch in range(20):
+    for epoch in range(90):
         loss_train = DVN.train(epoch)
         loss_valid, mean_f1 = DVN.valid()
-
+        scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
         results['f1_valid'].append(mean_f1)
