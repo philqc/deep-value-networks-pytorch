@@ -24,4 +24,4 @@ of the inputs. Also can be used as a baseline model
 
 ### Reproducibility ###
 We could easily reproduce the authors' results with the DVN on Bibtex (F1 of 44.07% on the test set) :
-<img src="bibtex_dvn_comparisons.png" width="80%">
+<img src="figures/bibtex_dvn_comparisons.png" width="80%">
