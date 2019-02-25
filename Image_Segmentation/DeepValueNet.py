@@ -77,8 +77,13 @@ class WeizmannHorseDataset(Dataset):
 #y_pred and y_true are all "torch tensor"
 def f1_score(y_pred, y_true):
     
-    intersect = np.sum(np.min([y_pred, y_true], axis=0))
-    union = np.sum(np.max([y_pred, y_true], axis=0))
+    y_pred = torch.flatten(y_pred).reshape(1,-1)
+    y_true = torch.flatten(y_true).reshape(1,-1)
+    
+    y_concat = torch.cat([y_pred, y_true], 0)
+    
+    intersect = torch.sum(torch.min(y_concat, 0)[0])
+    union = torch.sum(torch.max(y_concat, 0)[0])
     return 2 * intersect / float(intersect + max(10 ** -8, union))
 
 #%%
@@ -147,39 +152,40 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
                 train_loss+=loss.item()
 
     #Validation Process
-    return 0
+    return train_loss
     
 #%% The functions for creating training tuple
          
 #define Inference method for prediction
 def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0, num_iterations=20):
     """Run the inference"""
+    model.eval()
+    
     
     pred_masks = init_masks
     #convert to tensor so as to calculate gradient   
 
     input_data = torch.cat((imgs, pred_masks), 1)
     
-    pred_masks.requires_grad()
+    with torch.enable_grad():
     
-    for idx in range(0, num_iterations):
-        pred_masks.grad.zero_()
-        prediction = model(input_data)
-        
-        if gt_labels is None:
-             v = f1_score(pred_masks, gt_labels)
-             loss = -1*F.cross_entropy(prediction, v)
-             loss.backward()
-             gradient = pred_masks.grad
-        else:
-            prediction.backward()
-            gradient = pred_masks.grad
-        
-        pred_masks += learning_rate * gradient
-        pred_masks[pred_masks < 0] = 0
-        pred_masks[pred_masks > 1] = 1
-        pred_masks.requires_grad()
-    
+        for idx in range(0, num_iterations):
+            prediction = model(input_data)
+            
+            if gt_labels is None:
+                 v = f1_score(pred_masks, gt_labels)
+                 loss = -1*F.cross_entropy(prediction, v)
+                 gradient =  torch.autograd.grad(loss, pred_masks)
+            else:
+                torch.autograd.grad(prediction, pred_masks)
+                gradient = pred_masks.grad
+            
+            pred_masks += learning_rate * gradient
+            
+            #project back to the valid range
+            pred_masks = torch.clamp(pred_masks, 0, 1)
+            
+            
     return pred_masks 
     
     
@@ -268,10 +274,17 @@ if __name__ == "__main__":
     masks = next(iter(loader))[1]
     
     
+    #test f1 score
+    a = masks[0]
+    b = masks[2]
+
+    
+    print(f1_score(a,b))
+    
     #Create DVN 
-    DVN = DeepValueNet().to(device)
-    q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
-    a = q.get()
+#    DVN = DeepValueNet().to(device)
+#    q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
+#    a = q.get()
     #print the model summery
 #    print(DVN)
 #    
