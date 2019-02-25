@@ -94,20 +94,28 @@ class DeepValueNet(nn.Module):
          self.conv2 = nn.Conv2d(64, 128, 5, 2)
          self.conv3 = nn.Conv2d(128, 128, 5, 2)
          #Linear(in_features, out_features, bias=True)
-         self.fc1 = nn.Linear(4, 384)
+         self.fc1 = nn.Linear(4096, 384)
          self.fc2 = nn.Linear(384, 192)
+         self.fc3 = nn.Linear(192, 1)
      
      #define how input will be processed through those layers
      def forward(self, x):
          x = F.relu(self.conv1(x))
          x = F.relu(self.conv2(x))
          x = F.relu(self.conv3(x))
+         
+         #dont forget to flatten before connect to FC layers
+         x = x.view(-1, 4096)
+         
          x = F.relu(self.fc1(x))
          #apply dropout on the first FC layer as paper mentioned
          x = F.dropout(x, p=0.75)
          x = F.relu(self.fc2(x))
+         x = F.relu(self.fc3(x))
          #assume the oracle value function is IOU (range from 0 ~　１)
          x = F.sigmoid(x)
+         
+         return x
 
 #%%      
          
@@ -133,13 +141,16 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
         queue = create_sample_queue(model, train_imgs, train_masks, batch_size)
         while True:
             model.train()
+            model.zero_grad()
             train_loss = 0
-            if !queue.empty():
+            if queue.empty() != True:
                 #get training tuple from queue
                 image, label, f1_score = queue.get(timeout=10)
                 image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
-                optimizer.zerograd()
                 input_data = np.concatenate((image,label), axis = 1)
+                
+                optimizer.zerograd()
+                #concatenate input as a 4 channel image 
                 output = model(input_data)
                 loss = F.cross_entropy(output, f1_score)
                 loss.backward()
@@ -148,39 +159,34 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
             else:
                 break
 
-    #Validation Process
     return train_loss
     
 #%% The functions for creating training tuple
          
 #define Inference method for prediction
-def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0, num_iterations=20):
+def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_iterations=20):
     """Run the inference"""
     
-    pred_masks = init_masks
-    #convert to tensor so as to calculate gradient   
-
-    input_data = torch.cat((imgs, pred_masks), 1)
+    pred_masks = torch.autograd.Variable(init_masks , requires_grad=True)
+    input_data = torch.cat((imgs, pred_masks), 1).to(device)
     
-    pred_masks.requires_grad()
+    print ('check', input_data.shape)
     
     for idx in range(0, num_iterations):
-        pred_masks.grad.zero_()
         prediction = model(input_data)
-        
+        print ('check', prediction)
         if gt_labels is None:
              v = f1_score(pred_masks, gt_labels)
              loss = -1*F.cross_entropy(prediction, v)
-             loss.backward()
-             gradient = pred_masks.grad
+             grad = torch.autograd.grad(loss, pred_masks)
+
         else:
             prediction.backward()
-            gradient = pred_masks.grad
+            grad = torch.autograd.grad(prediction, pred_masks)
         
-        pred_masks += learning_rate * gradient
-        pred_masks[pred_masks < 0] = 0
-        pred_masks[pred_masks > 1] = 1
-        pred_masks.requires_grad()
+        print(grad.shape)
+        pred_masks += learning_rate * grad
+        pred_masks = torch.clamp(pred_masks, 0, 1)
     
     return pred_masks 
     
@@ -274,29 +280,39 @@ if __name__ == "__main__":
     imgs = next(iter(loader))[0]
     masks = next(iter(loader))[1]
     print(imgs[0:4].shape)
-    
+    print(masks[0:4].shape)
+    print(torch.cat((imgs[0:4],masks[0:4]),1).shape)
     #Create DVN 
     DVN = DeepValueNet().to(device)
     
-    #queue test
-    q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
-    print (q.qsize())
-    while True:
-        if(q.empty()):
-            print('Queue is empty')
-            break;
-        print('take a element from Queue')
-        a, b = q.get(timeout=10)
-        print(a.shape, b.shape)
+#    print the model summery
+    print(DVN)
+    
+    #Visualize the output of each layer via torchSummary
+    summary(DVN, (4, 32, 32))
+    
+#    out = DVN(torch.cat((imgs[0:4],masks[0:4]),1).to(device))
+#    
+#    print(out.shape)
+    
+#    #queue test
+#    q = create_sample_queue(DVN, imgs, masks, 1, num_threads = 5)
+#    print (q.qsize())
+#    while True:
+#        if(q.empty()):
+#            print('Queue is empty')
+#            break;
+#        print('take a element from Queue')
+#        a, b = q.get(timeout=10)
+#        print(a.shape, b.shape)
+        
+ #%%       
+    #inference test
+#    pred_mask = inference(DVN, imgs[0:4], masks[0:4], gt_labels=None, learning_rate=0.01, num_iterations=20)
+#    
 
     
 
-        
-#    print the model summery
-#    print(DVN)
-#    
-#    #Visualize the output of each layer via torchSummary
-#    summary(DVN, (4, 32, 32))
 #    
 #    #choose the optimizer 
 #    optimizer = optim.SGD(DVN.parameters(), lr=0.05, momentum=0.9)
