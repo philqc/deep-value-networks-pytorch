@@ -94,7 +94,7 @@ class DeepValueNet(nn.Module):
          self.conv2 = nn.Conv2d(64, 128, 5, 2)
          self.conv3 = nn.Conv2d(128, 128, 5, 2)
          #Linear(in_features, out_features, bias=True)
-         self.fc1 = nn.Linear(4096, 384)
+         self.fc1 = nn.Linear(128*4*4, 384)
          self.fc2 = nn.Linear(384, 192)
          self.fc3 = nn.Linear(192, 1)
      
@@ -103,10 +103,8 @@ class DeepValueNet(nn.Module):
          x = F.relu(self.conv1(x))
          x = F.relu(self.conv2(x))
          x = F.relu(self.conv3(x))
-         
          #dont forget to flatten before connect to FC layers
-         x = x.view(-1, 4096)
-         
+         x = x.view(-1, 128*4*4)
          x = F.relu(self.fc1(x))
          #apply dropout on the first FC layer as paper mentioned
          x = F.dropout(x, p=0.75)
@@ -175,7 +173,7 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
     for idx in range(0, num_iterations):
         prediction = model(input_data)
         print ('check', prediction)
-        if gt_labels is None:
+        if gt_labels is not None:
              v = f1_score(pred_masks, gt_labels)
              loss = -1*F.cross_entropy(prediction, v)
              grad = torch.autograd.grad(loss, pred_masks)
@@ -290,10 +288,7 @@ if __name__ == "__main__":
     
     #Visualize the output of each layer via torchSummary
     summary(DVN, (4, 32, 32))
-    
-#    out = DVN(torch.cat((imgs[0:4],masks[0:4]),1).to(device))
-#    
-#    print(out.shape)
+
     
 #    #queue test
 #    q = create_sample_queue(DVN, imgs, masks, 1, num_threads = 5)
@@ -308,8 +303,8 @@ if __name__ == "__main__":
         
  #%%       
     #inference test
-#    pred_mask = inference(DVN, imgs[0:4], masks[0:4], gt_labels=None, learning_rate=0.01, num_iterations=20)
-#    
+    pred_mask = inference(DVN, imgs[0:16], masks[0:16], gt_labels=None, learning_rate=0.01, num_iterations=20)
+    
 
     
 
