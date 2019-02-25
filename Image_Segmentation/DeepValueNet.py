@@ -136,6 +136,8 @@ class DeepValueNet(nn.Module):
 #define the training method  
 def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
     
+    model.train()
+    
     #split the dataset
     train_imgs = imgs[0:200]
     train_masks = masks[0:200]
@@ -146,31 +148,36 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
     test_imgs = imgs[301:]
     test_masks = masks[301:]
     
+    ls = nn.MSELoss()
+    data_size = imgs.shape[0]
+    
     #Training Process
     for epoch in range(0, epochs):
         #shuffle the training dataset
         print('epoch:', epoch)
         queue = create_sample_queue(model, train_imgs, train_masks, batch_size)
+        model.zero_grad()
         while True:
-            model.train()
-            model.zero_grad()
             train_loss = 0
             if queue.empty() != True:
                 #get training tuple from queue
                 image, label, f1_score = queue.get(timeout=10)
                 image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
-                input_data = np.concatenate((image,label), axis = 1)
+                input_data = torch.cat((image,label), 1)
                 
-                optimizer.zerograd()
+                optimizer.zero_grad()
                 #concatenate input as a 4 channel image 
                 output = model(input_data)
-                loss = F.cross_entropy(output, f1_score)
+                loss = ls(output, f1_score)
                 loss.backward()
                 optimizer.step()
                 train_loss+=loss.item()
             else:
                 break
-
+    
+#        train_loss /= data_size
+        print("Training loss = ", train_loss)
+    
     return train_loss
     
 #%% The functions for creating training tuple
@@ -181,17 +188,18 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
     
     model.eval()
     
-    #figure out to(device)
-    imgs = imgs.to(device)
-    pred_masks = init_masks.to(device)
+#    #figure out to(device)
+#    imgs = imgs.to(device)
+    pred_masks = init_masks
+    ls = nn.MSELoss()
     
     with torch.enable_grad():
-        input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True).to(device)
+        input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True)
         for idx in range(0, num_iterations):
             prediction = model(input_data)
             if gt_labels is not None:
-                 v = f1_score(pred_masks, gt_labels)
-                 loss = -1*F.cross_entropy(prediction, v)
+                 v = f1_score_batch(pred_masks, gt_labels)
+                 loss = -1*ls(prediction.to(device), v.to(device))
                  value = loss
             else:
                 value = prediction
@@ -213,20 +221,24 @@ def generate_examples(model, imgs, masks, train = False, val = False):
     
     """generate training tuple (adversarial or normal inference)"""
     
-    init_masks = np.zeros(masks)
+    init_masks = torch.zeros_like(masks)
     
     #50% chance to get adversarial training sample
     if train and np.random.rand() >= 0.5:
         #Initialize 50% Ground truth y_pred, 50% from zero matrices
-        gt_sample_choice = np.random.rand(masks.shape[0]) > 0.5
+        gt_sample_choice = torch.randn(masks.shape[0]) > 0.5
         init_masks[gt_sample_choice] = masks[gt_sample_choice]
-        pred_masks = inference(imgs, init_masks, masks, num_iterations = 1  )
+        pred_masks = inference(model, imgs, init_masks, masks, num_iterations = 1)
         
     else:
-        pred_masks = inference(imgs, init_masks, )
+        pred_masks = inference(model, imgs, init_masks)
+        
+    
+    #create correspond f1_scores for pred_masks
+    scores = f1_score_batch(pred_masks, masks)
 
         
-    return pred_masks
+    return pred_masks, scores
     
 #create syncrhonized queue to accumulate the sample:
 def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads = 5):
@@ -247,9 +259,8 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
                 masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
 
                 #generate data (training tuples)
-#                pred_masks, f1_scores = generate_examples(imgs, masks, train = True)
-#                tuple_queue.put((imgs, pred_masks, f1_scores))
-                tuple_queue.put((imgs,masks))
+                pred_masks, f1_scores = generate_examples(model, imgs, masks, train = True)
+                tuple_queue.put((imgs, pred_masks, f1_scores))
                 
         except Empty:
             #put empty object as a end signal
@@ -311,31 +322,31 @@ if __name__ == "__main__":
 #%%function Tests
     
     #f1_score batch test
-    s = f1_score_batch(masks[0:4], masks[3:7])
-    print (s)
+#    s = f1_score_batch(masks[0:4], masks[3:7])
+#    print (s)
     #queue test
-    q = create_sample_queue(DVN, imgs, masks, 1, num_threads = 5)
-    print (q.qsize())
-    while True:
-        if(q.empty()):
-            print('Queue is empty')
-            break;
-        print('take a element from Queue')
-        a, b = q.get(timeout=10)
-        print(a.shape, b.shape)
+#    q = create_sample_queue(DVN, imgs.to(device), masks.to(device), 5, num_threads = 1)
+#    print (q.qsize())
+#    while True:
+#        if(q.empty()):
+#            print('Queue is empty')
+#            break;
+#        print('take a element from Queue')
+#        a, b, c = q.get(timeout=10)
+#        print(a.shape, b.shape,  c.shape)
        
-    #inference test
-    pred_mask = inference(DVN, imgs[0:16], masks[0:16], gt_labels=None, learning_rate=0.01, num_iterations=20)
-    print(pred_mask.shape)
+#    #inference test
+#    pred_mask = inference(DVN, imgs[0:16], masks[0:16], gt_labels=None, learning_rate=0.01, num_iterations=20)
+#    print(pred_mask.shape)
 
-  #%%  
+#%%  
 
-#    
-#    #choose the optimizer 
-#    optimizer = optim.SGD(DVN.parameters(), lr=0.05, momentum=0.9)
-#    
-#    #training
-#    train(imgs, masks, DVN, device, 16, optimizer, 10)
+    
+    #choose the optimizer 
+    optimizer = optim.Adam(DVN.parameters(), lr=0.05)
+    
+    #training
+    train(imgs.to(device), masks.to(device), DVN, device, 16, optimizer, 10)
     
     
     
