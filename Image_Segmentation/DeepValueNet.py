@@ -73,13 +73,26 @@ class WeizmannHorseDataset(Dataset):
         return image, mask
         
 #%% extended domain oracle value function
-#define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?)     
+#define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?) 
+        
+def f1_score_batch(y_pred, y_true):
+    batch_size = y_pred.shape[0]
+    scores = torch.zeros(batch_size, 1)
+    for i in range(batch_size):
+        scores[i] = f1_score(y_pred[i], y_true[i])
     
+    return scores
+
 #y_pred and y_true are all "torch tensor"
 def f1_score(y_pred, y_true):
     
-    intersect = np.sum(np.min([y_pred, y_true], axis=0))
-    union = np.sum(np.max([y_pred, y_true], axis=0))
+    y_pred = torch.flatten(y_pred).reshape(1,-1)
+    y_true = torch.flatten(y_true).reshape(1,-1)
+
+    y_concat = torch.cat([y_pred, y_true], 0)
+
+    intersect = torch.sum(torch.min(y_concat, 0)[0])
+    union = torch.sum(torch.max(y_concat, 0)[0])
     return 2 * intersect / float(intersect + max(10 ** -8, union))
 
 #%%
@@ -180,7 +193,6 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
                  v = f1_score(pred_masks, gt_labels)
                  loss = -1*F.cross_entropy(prediction, v)
                  value = loss
-    
             else:
                 value = prediction
                 
@@ -295,24 +307,28 @@ if __name__ == "__main__":
     #Visualize the output of each layer via torchSummary
     summary(DVN, (4, 32, 32))
 
+
+#%%function Tests
     
-#    #queue test
-#    q = create_sample_queue(DVN, imgs, masks, 1, num_threads = 5)
-#    print (q.qsize())
-#    while True:
-#        if(q.empty()):
-#            print('Queue is empty')
-#            break;
-#        print('take a element from Queue')
-#        a, b = q.get(timeout=10)
-#        print(a.shape, b.shape)
-        
- #%%       
+    #f1_score batch test
+    s = f1_score_batch(masks[0:4], masks[3:7])
+    print (s)
+    #queue test
+    q = create_sample_queue(DVN, imgs, masks, 1, num_threads = 5)
+    print (q.qsize())
+    while True:
+        if(q.empty()):
+            print('Queue is empty')
+            break;
+        print('take a element from Queue')
+        a, b = q.get(timeout=10)
+        print(a.shape, b.shape)
+       
     #inference test
     pred_mask = inference(DVN, imgs[0:16], masks[0:16], gt_labels=None, learning_rate=0.01, num_iterations=20)
-    
+    print(pred_mask.shape)
 
-    
+  #%%  
 
 #    
 #    #choose the optimizer 
