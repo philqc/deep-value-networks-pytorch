@@ -228,8 +228,9 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
                 masks = train_masks[idx, min(train_masks.shape[0], idx + batch_size)]
 
                 #generate data (training tuples)
-                pred_masks, f1_scores = generate_examples(imgs, masks, train = True)
-                tuple_queue.put((imgs, pred_masks, f1_scores))
+#                pred_masks, f1_scores = generate_examples(imgs, masks, train = True)
+#                tuple_queue.put((imgs, pred_masks, f1_scores))
+                tuple_queue.put(idx)
                 
         except Empty:
             #put empty object as a end signal
@@ -274,17 +275,10 @@ if __name__ == "__main__":
     masks = next(iter(loader))[1]
     
     
-    #test f1 score
-    a = masks[0]
-    b = masks[2]
-
-    
-    print(f1_score(a,b))
-    
     #Create DVN 
-#    DVN = DeepValueNet().to(device)
-#    q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
-#    a = q.get()
+    DVN = DeepValueNet().to(device)
+    q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
+    a = q.get()
     #print the model summery
 #    print(DVN)
 #    
