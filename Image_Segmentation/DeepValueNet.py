@@ -77,13 +77,8 @@ class WeizmannHorseDataset(Dataset):
 #y_pred and y_true are all "torch tensor"
 def f1_score(y_pred, y_true):
     
-    y_pred = torch.flatten(y_pred).reshape(1,-1)
-    y_true = torch.flatten(y_true).reshape(1,-1)
-    
-    y_concat = torch.cat([y_pred, y_true], 0)
-    
-    intersect = torch.sum(torch.min(y_concat, 0)[0])
-    union = torch.sum(torch.max(y_concat, 0)[0])
+    intersect = np.sum(np.min([y_pred, y_true], axis=0))
+    union = np.sum(np.max([y_pred, y_true], axis=0))
     return 2 * intersect / float(intersect + max(10 ** -8, union))
 
 #%%
@@ -152,40 +147,39 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
                 train_loss+=loss.item()
 
     #Validation Process
-    return train_loss
+    return 0
     
 #%% The functions for creating training tuple
          
 #define Inference method for prediction
 def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0, num_iterations=20):
     """Run the inference"""
-    model.eval()
-    
     
     pred_masks = init_masks
     #convert to tensor so as to calculate gradient   
 
     input_data = torch.cat((imgs, pred_masks), 1)
     
-    with torch.enable_grad():
+    pred_masks.requires_grad()
     
-        for idx in range(0, num_iterations):
-            prediction = model(input_data)
-            
-            if gt_labels is None:
-                 v = f1_score(pred_masks, gt_labels)
-                 loss = -1*F.cross_entropy(prediction, v)
-                 gradient =  torch.autograd.grad(loss, pred_masks)
-            else:
-                torch.autograd.grad(prediction, pred_masks)
-                gradient = pred_masks.grad
-            
-            pred_masks += learning_rate * gradient
-            
-            #project back to the valid range
-            pred_masks = torch.clamp(pred_masks, 0, 1)
-            
-            
+    for idx in range(0, num_iterations):
+        pred_masks.grad.zero_()
+        prediction = model(input_data)
+        
+        if gt_labels is None:
+             v = f1_score(pred_masks, gt_labels)
+             loss = -1*F.cross_entropy(prediction, v)
+             loss.backward()
+             gradient = pred_masks.grad
+        else:
+            prediction.backward()
+            gradient = pred_masks.grad
+        
+        pred_masks += learning_rate * gradient
+        pred_masks[pred_masks < 0] = 0
+        pred_masks[pred_masks > 1] = 1
+        pred_masks.requires_grad()
+    
     return pred_masks 
     
     
@@ -213,7 +207,7 @@ def generate_examples(model, imgs, masks, train = False, val = False):
 #create syncrhonized queue to accumulate the sample:
 def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads = 5):
     #need to reconsider the maxsize
-    tuple_queue = Queue(maxsize = 20)
+    tuple_queue = Queue()
     indices_queue = Queue()
     for idx in np.arange(0, train_imgs.shape[0], batch_size):
         indices_queue.put(idx)
@@ -224,21 +218,25 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
             while True:
                 #get a batch
                 idx = indices_queue.get_nowait()
-                imgs = train_imgs[idx, min(train_imgs.shape[0], idx + batch_size)]
-                masks = train_masks[idx, min(train_masks.shape[0], idx + batch_size)]
+                print(idx)
+                imgs = train_imgs[idx: min(train_imgs.shape[0], idx + batch_size)]
+                masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
 
                 #generate data (training tuples)
 #                pred_masks, f1_scores = generate_examples(imgs, masks, train = True)
 #                tuple_queue.put((imgs, pred_masks, f1_scores))
-                tuple_queue.put(idx)
+                tuple_queue.put((imgs,masks))
                 
         except Empty:
             #put empty object as a end signal
-            tuple_queue.put(object())
+            print("empty detect")
+            
         
-        for _ in range(num_threads):
-            thread = threading.Thread(target = generate)
-            thread.start()
+    for _ in range(num_threads):
+        thread = threading.Thread(target = generate)
+        thread.start()
+        thread.join()
+    
     return tuple_queue
 
 #%%
@@ -273,13 +271,26 @@ if __name__ == "__main__":
     #all data and label(Tensor)
     imgs = next(iter(loader))[0]
     masks = next(iter(loader))[1]
-    
+    print(imgs[0:4].shape)
     
     #Create DVN 
     DVN = DeepValueNet().to(device)
+    
+    #queue test
     q = create_sample_queue(DVN, imgs, masks, 16, num_threads = 5)
-    a = q.get()
-    #print the model summery
+    print (q.qsize())
+    while True:
+        if(q.empty()):
+            print('Queue is empty')
+            break;
+        print('take a element from Queue')
+        a, b = q.get(timeout=10)
+        print(a.shape, b.shape)
+
+    
+
+        
+#    print the model summery
 #    print(DVN)
 #    
 #    #Visualize the output of each layer via torchSummary
