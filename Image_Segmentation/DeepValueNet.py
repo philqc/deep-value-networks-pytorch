@@ -134,9 +134,9 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
         while True:
             model.train()
             train_loss = 0
-            data = queue.get(timeout=10)
-            if data is not object():
-                image, label, f1_score = data
+            if !queue.empty():
+                #get training tuple from queue
+                image, label, f1_score = queue.get(timeout=10)
                 image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
                 optimizer.zerograd()
                 input_data = np.concatenate((image,label), axis = 1)
@@ -145,9 +145,11 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
                 loss.backward()
                 optimizer.step()
                 train_loss+=loss.item()
+            else:
+                break
 
     #Validation Process
-    return 0
+    return train_loss
     
 #%% The functions for creating training tuple
          
