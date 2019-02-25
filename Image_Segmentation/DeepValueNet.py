@@ -154,18 +154,19 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
     #Training Process
     for epoch in range(0, epochs):
         #shuffle the training dataset
+        train_loss = 0
         print('epoch:', epoch)
         queue = create_sample_queue(model, train_imgs, train_masks, batch_size)
         model.zero_grad()
+        optimizer.zero_grad()
         while True:
-            train_loss = 0
             if queue.empty() != True:
                 #get training tuple from queue
                 image, label, f1_score = queue.get(timeout=10)
                 image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
                 input_data = torch.cat((image,label), 1)
                 
-                optimizer.zero_grad()
+                
                 #concatenate input as a 4 channel image 
                 output = model(input_data)
                 loss = ls(output, f1_score)
@@ -186,23 +187,26 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
 def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_iterations=20):
     """Run the inference"""
     
-    model.eval()
-    
+#    model.eval()
+#    
 #    #figure out to(device)
 #    imgs = imgs.to(device)
     pred_masks = init_masks
     ls = nn.MSELoss()
     
     with torch.enable_grad():
-        input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True)
         for idx in range(0, num_iterations):
+            input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True)
             prediction = model(input_data)
             if gt_labels is not None:
                  v = f1_score_batch(pred_masks, gt_labels)
-                 loss = -1*ls(prediction.to(device), v.to(device))
+                 loss = ls(prediction.to(device), v.to(device))
+#                 print('loss', loss.item())
                  value = loss
             else:
                 value = prediction
+                print (prediction)
+#                print(value)
                 
             grad = torch.autograd.grad(value, input_data, grad_outputs=torch.ones_like(value),
                                            only_inputs=True)
@@ -210,7 +214,8 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
 #            print(grad[:,3:4,:,:].shape)
 #            print(pred_masks.shape)
             pred_masks += learning_rate * grad[:,3:4,:,:]
-            pred_masks = torch.clamp(pred_masks, 0, 1)
+            pred_masks[pred_masks < 0.] = 0
+            pred_masks[pred_masks > 0.] = 1
     
     return pred_masks 
     
@@ -254,7 +259,7 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
             while True:
                 #get a batch
                 idx = indices_queue.get_nowait()
-                print(idx)
+#                print(idx)
                 imgs = train_imgs[idx: min(train_imgs.shape[0], idx + batch_size)]
                 masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
 
@@ -333,20 +338,36 @@ if __name__ == "__main__":
 #            break;
 #        print('take a element from Queue')
 #        a, b, c = q.get(timeout=10)
-#        print(a.shape, b.shape,  c.shape)
+#        break;
        
-#    #inference test
-#    pred_mask = inference(DVN, imgs[0:16], masks[0:16], gt_labels=None, learning_rate=0.01, num_iterations=20)
-#    print(pred_mask.shape)
+        
+#
+#    inference test
+#    pred_mask = inference(DVN, imgs[0:16].to(device), torch.zeros_like(masks[0:16]).to(device), gt_labels = None, learning_rate=0.01, num_iterations=20)
+#    a = pred_mask.to('cpu').numpy()
+#    b = a[1]    
+#    plt.imshow(np.squeeze(b))
+    
+#    scores = f1_score_batch(pred_mask, masks[0:16].to(device))
+#    print(scores)
 
 #%%  
 
-    
-    #choose the optimizer 
+#    
+#    #choose the optimizer 
     optimizer = optim.Adam(DVN.parameters(), lr=0.05)
+#    
+#    #training
+    train(imgs.to(device), masks.to(device), DVN, device, 16, optimizer, 200)
+#%%
+#    inference test
+    pred_mask = inference(DVN, imgs[0:16].to(device), torch.zeros_like(masks[0:16]).to(device), gt_labels = None, learning_rate=0.05, num_iterations=20)
+    a = pred_mask.to('cpu').numpy()
+    b = a[1]    
+    plt.imshow(np.squeeze(b))
     
-    #training
-    train(imgs.to(device), masks.to(device), DVN, device, 16, optimizer, 10)
+#    scores = f1_score_batch(torch.zeros_like(masks[0:16]).to(device), masks[0:16].to(device))
+#    print(scores)
     
     
     
