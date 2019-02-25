@@ -19,6 +19,7 @@ from skimage import io
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 
@@ -165,26 +166,31 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
 def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_iterations=20):
     """Run the inference"""
     
-    pred_masks = torch.autograd.Variable(init_masks , requires_grad=True)
-    input_data = torch.cat((imgs, pred_masks), 1).to(device)
+    model.eval()
     
-    print ('check', input_data.shape)
+    #figure out to(device)
+    imgs = imgs.to(device)
+    pred_masks = init_masks.to(device)
     
-    for idx in range(0, num_iterations):
-        prediction = model(input_data)
-        print ('check', prediction)
-        if gt_labels is not None:
-             v = f1_score(pred_masks, gt_labels)
-             loss = -1*F.cross_entropy(prediction, v)
-             grad = torch.autograd.grad(loss, pred_masks)
-
-        else:
-            prediction.backward()
-            grad = torch.autograd.grad(prediction, pred_masks)
-        
-        print(grad.shape)
-        pred_masks += learning_rate * grad
-        pred_masks = torch.clamp(pred_masks, 0, 1)
+    with torch.enable_grad():
+        input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True).to(device)
+        for idx in range(0, num_iterations):
+            prediction = model(input_data)
+            if gt_labels is not None:
+                 v = f1_score(pred_masks, gt_labels)
+                 loss = -1*F.cross_entropy(prediction, v)
+                 value = loss
+    
+            else:
+                value = prediction
+                
+            grad = torch.autograd.grad(value, input_data, grad_outputs=torch.ones_like(value),
+                                           only_inputs=True)
+            grad = grad[0].detach()
+#            print(grad[:,3:4,:,:].shape)
+#            print(pred_masks.shape)
+            pred_masks += learning_rate * grad[:,3:4,:,:]
+            pred_masks = torch.clamp(pred_masks, 0, 1)
     
     return pred_masks 
     
@@ -202,10 +208,10 @@ def generate_examples(model, imgs, masks, train = False, val = False):
         #Initialize 50% Ground truth y_pred, 50% from zero matrices
         gt_sample_choice = np.random.rand(masks.shape[0]) > 0.5
         init_masks[gt_sample_choice] = masks[gt_sample_choice]
-        pred_masks = inference(imgs, init_masks, masks)
+        pred_masks = inference(imgs, init_masks, masks, num_iterations = 1  )
         
     else:
-        pred_masks = inference(imgs, init_masks)
+        pred_masks = inference(imgs, init_masks, )
 
         
     return pred_masks
