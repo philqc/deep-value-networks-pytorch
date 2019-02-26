@@ -4,6 +4,66 @@ from sklearn.metrics import f1_score
 import matplotlib.pyplot as plt
 import pickle
 import os
+import torch
+
+
+class Adam:
+    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= betas[0] < 1.0:
+            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+        if not 0.0 <= betas[1] < 1.0:
+            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+
+        self.v = torch.zeros_like(params)
+        self.m = torch.zeros_like(params)
+        self.betas = betas
+        self.lr = lr
+        self.eps = eps
+        self.t = 0
+
+    def update(self, gradients):
+        # update time step
+        self.t += 1
+
+        self.m = self.betas[0] * self.m + (1 - self.betas[0]) * gradients
+        self.v = self.betas[1] * self.v + (1 - self.betas[1]) * (gradients ** 2)
+
+        # Bias corrected first and second moment estimates
+        mean = self.m / (1 - self.betas[0] ** self.t)
+        variance = self.v / (1 - self.betas[1] ** self.t)
+
+        update = self.lr * mean / (torch.sqrt(variance) + self.eps)
+        return update
+
+
+class SGD:
+
+    def __init__(self, params, lr=0.5, momentum=0., weight_decay=0.0):
+        """
+        SGD with momentum for the inference part of
+        training/testing. This speeds up training by using
+        autograd.grad of the loss with respect to only the inputs
+        but optimizer of pytorch is not compatible, so we make
+        our own optimizer function
+        """
+        if lr < 0.0:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if momentum < 0.0:
+            raise ValueError("Invalid momentum value: {}".format(momentum))
+        if weight_decay < 0.0:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+
+        self.lr = lr
+        self.momentum = momentum
+        self.v = torch.zeros_like(params)
+
+    def update(self, gradients):
+        self.v = self.momentum * self.v + self.lr * gradients
+        return self.v
 
 
 class MyDataset(Dataset):
@@ -82,17 +142,22 @@ def plot_aggregate_results(results_path, add_title=''):
     ax1.set_ylabel('loss')
     ax1.set_xlabel('epochs')
     ax2.set_title('Validation F1 Score ' + add_title)
-    ax2.set_ylabel('accuracy')
+    ax2.set_ylabel('F1 Score')
     ax2.set_xlabel('epochs')
 
     # max number of epochs
     max_ep = 60
 
     for res in array_results:
+
+        if res['name'] == 'SPEN_bibtex':
+            res['name'] = 'SPEN'
+
         label = res['name']
 
         # ax1.plot(res['loss_train'][:max_ep], label=label)
-        ax1.plot(res['loss_valid'][:max_ep], label=label)
+        if res['name'] != 'SPEN':
+            ax1.plot(res['loss_valid'][:max_ep], label=label)
         ax2.plot(res['f1_valid'][:max_ep], label=label)
 
     ax1.legend()
@@ -104,7 +169,7 @@ if __name__ == "__main__":
 
     # Path where the results in .pkl are stored
     dir_path = os.path.dirname(os.path.realpath(__file__))
-    dir_path += '/saved_results/'
+    dir_path += '/saved_results/bibtex/'
 
     # Plot results from all the .pkl files
     plot_aggregate_results(dir_path, 'Bibtex')

@@ -11,9 +11,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
+import pdb
 
 
-class SPEN(nn.Module):
+class EnergyNetwork(nn.Module):
 
     def __init__(self, feature_dim=1836, label_dim=159, num_hidden=None, 
                  num_pairwise=16, non_linearity=nn.Softplus()):
@@ -117,10 +118,7 @@ class DeepValueNetwork:
             Simply add the ground truth outputs y* with some probably p while training.
         """
 
-        if use_cuda:
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
+        self.device = torch.device("cuda" if use_cuda else "cpu")
 
         self.add_adversarial = add_adversarial
         self.add_ground_truth = add_ground_truth
@@ -137,8 +135,8 @@ class DeepValueNetwork:
         self.inf_lr = inf_lr
 
         # Deep Value Network is just a SPEN
-        self.model = SPEN(feature_dim, label_dim, num_hidden,
-                          num_pairwise, non_linearity).to(self.device)
+        self.model = EnergyNetwork(feature_dim, label_dim, num_hidden,
+                                   num_pairwise, non_linearity).to(self.device)
 
         self.loss_fn = nn.BCEWithLogitsLoss()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
@@ -180,7 +178,6 @@ class DeepValueNetwork:
         if pred_labels.shape != gt_labels.shape:
             raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
 
-        # if not train or self.binarize:
         if not self.training:
             # No relaxation, 0-1 only
             pred_labels = torch.where(pred_labels >= 0.5, torch.ones(1), torch.zeros(1))
@@ -244,6 +241,9 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
+        optim_inf = SGD(y, lr=0.5, momentum=0)
+        #optim_inf = Adam(y, lr=0.5)
+
         with torch.enable_grad():
 
             for i in range(num_iterations):
@@ -259,9 +259,9 @@ class DeepValueNetwork:
 
                 grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value),
                                            only_inputs=True)
-                y_grad = grad[0].detach()
-                y = y + self.inf_lr * y_grad
 
+                y_grad = grad[0].detach()
+                y = y + optim_inf.update(y_grad)
                 # Project back to the valid range
                 y = torch.clamp(y, 0, 1)
 
@@ -322,16 +322,16 @@ class DeepValueNetwork:
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                y_prediction = self.generate_output(inputs, targets)
-                oracle = self.get_oracle_value(y_prediction, targets)
-                output = self.model(inputs, y_prediction)
+                pred_labels = self.generate_output(inputs, targets)
+                oracle = self.get_oracle_value(pred_labels, targets)
+                output = self.model(inputs, pred_labels)
 
                 loss += self.loss_fn(oracle, output)
 
                 # round prediction to binary 0/1
-                y_prediction = y_prediction.round().int()
+                pred_labels = pred_labels.round().int()
 
-                f1 = compute_f1_score(targets, y_prediction)
+                f1 = compute_f1_score(targets, pred_labels)
                 mean_f1.append(f1)
 
         mean_f1 = np.mean(mean_f1)
@@ -352,17 +352,14 @@ if __name__ == "__main__":
     dir_path = os.path.dirname(os.path.realpath(__file__))
 
     # If a GPU is available, use it
-    if torch.cuda.is_available():
-        use_cuda = True
-    else:
-        use_cuda = False
+    use_cuda = torch.cuda.is_available()
 
     print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
 
     DVN = DeepValueNetwork(train_inputs, train_labels, use_cuda,
-                           add_adversarial=False, add_ground_truth=True,
-                           batch_size=32, batch_size_eval=32)
+                           add_adversarial=True, add_ground_truth=False,
+                           batch_size=64, batch_size_eval=64)
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)

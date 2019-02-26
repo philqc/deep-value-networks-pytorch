@@ -8,22 +8,32 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-from load_bibtex import get_bibtex, test_model_bibtex
+from load_bibtex import get_bibtex
 from auxiliary_functions import *
 
 
 class FeatureMLP(nn.Module):
-    """ 
-    MLP to make a mapping from x -> F(x) 
-    where F(x) is a feature representation of the inputs
-    2 layer network with sigmoid ending to predict
-    independently for each x_i its label y_i
-    n_hidden_units=150 in SPEN/INFNET papers for bibtex/Bookmarks
-    n_hidden_units=250 in SPEN/INFNET papers for Delicious
-    using Adam with lr=0.001 as the INFNET paper
-    """
-    def __init__(self, n_labels, dim_input, n_hidden_units=150):
+
+    def __init__(self, n_labels, dim_input, only_feature_extraction=False, n_hidden_units=150):
+        """
+        MLP to make a mapping from x -> F(x)
+        where F(x) is a feature representation of the inputs
+        2 layer network with sigmoid ending to predict
+        independently for each x_i its label y_i
+        n_hidden_units=150 in SPEN/INFNET papers for bibtex/Bookmarks
+        n_hidden_units=250 in SPEN/INFNET papers for Delicious
+        using Adam with lr=0.001 as the INFNET paper
+
+        Parameters:
+        ---------------
+        only_feature_extraction: bool
+            once the network is trained, we just use it until the second layer
+            for feature extraction of the inputs.
+        """
         super().__init__()
+
+        self.only_feature_extraction = only_feature_extraction
+        self.n_hidden_units = n_hidden_units
 
         self.fc1 = nn.Linear(dim_input, n_hidden_units)
         self.fc2 = nn.Linear(n_hidden_units, n_hidden_units)
@@ -39,7 +49,8 @@ class FeatureMLP(nn.Module):
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        x = torch.sigmoid(self.fc3(x))
+        if not self.only_feature_extraction:
+            x = torch.sigmoid(self.fc3(x))
         return x
 
 
@@ -54,10 +65,7 @@ class FeatureNetwork:
         cross entropy
         """
 
-        if use_cuda:
-            self.device = torch.device("cuda")
-        else:
-            self.device = torch.device("cpu")
+        self.device = torch.device("cuda" if use_cuda else "cpu")
 
         self.dim_input = inputs.shape[1]
         self.n_labels = labels.shape[1]
@@ -70,7 +78,7 @@ class FeatureNetwork:
         self.n_train = int(len(inputs) * 0.90)
 
         indices = list(range(len(inputs)))
-        random.shuffle(indices)
+        #random.shuffle(indices)
 
         train_data = MyDataset(inputs, labels)
 
@@ -179,7 +187,7 @@ class FeatureNetwork:
 
         f1 = compute_f1_score(test_labels, outputs)
 
-        print('Test set : Avg_Loss = {:.2f}; F1 score = {:.2f}'
+        print('Test set : Avg_Loss = {:.2f}; F1 score = {:.2f}%'
               ''.format(loss, 100 * f1))
 
         return loss, f1
@@ -190,11 +198,9 @@ if __name__ == "__main__":
     dir_path = os.path.dirname(os.path.realpath(__file__))
 
     # If a GPU is available, use it
-    if torch.cuda.is_available():
-        use_cuda = True
-    else:
-        use_cuda = False
+    use_cuda = torch.cuda.is_available()
 
+    print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
 
     F_Net = FeatureNetwork(train_inputs, train_labels, use_cuda)
@@ -205,17 +211,20 @@ if __name__ == "__main__":
 
     results = {'loss_train': [], 'loss_valid': [], 'f1_valid': []}
 
-    # Train foo 10 epochs as the INFNET paper
+    scheduler = torch.optim.lr_scheduler.StepLR(F_Net.model.optimizer, step_size=25, gamma=0.1)
+
+    # Train for 10 epochs as the INFNET paper
     for epoch in range(10):
         loss_train = F_Net.train(epoch)
         loss_valid, mean_f1 = F_Net.valid()
+        scheduler.step()
 
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
         results['f1_valid'].append(mean_f1)
 
     # Testing phase
-    testing = False
+    testing = True
     if testing:
         print('Loading Test set...')
         test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
