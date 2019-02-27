@@ -200,7 +200,9 @@ class DeepValueNetwork:
         """
         Compute the ground truth value, i.e. v*(y, y*)
         of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score.
+        is the relaxed version of the IOU (intersection
+        over union) when training, and the discrete IOU
+        when validating/testing
         """
         if pred_labels.shape != gt_labels.shape:
             raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
@@ -221,11 +223,11 @@ class DeepValueNetwork:
         # for numerical stability
         epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
 
-        relaxed_iou = intersect / torch.max(epsilon, union)
+        iou = intersect / torch.max(epsilon, union)
         # we want a (Batch_size x 1) tensor
-        relaxed_iou = relaxed_iou.view(-1, 1)
+        iou = iou.view(-1, 1)
         #pdb.set_trace()
-        return relaxed_iou
+        return iou
 
     def get_ini_labels(self, x, gt_labels=None):
         """

@@ -173,26 +173,29 @@ class DeepValueNetwork:
         """
         Compute the ground truth value, i.e. v*(y, y*)
         of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score.
+        is the relaxed version of the F1 Score when training.
+        and the discrete F1 when validating/testing
         """
         if pred_labels.shape != gt_labels.shape:
             raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
 
         if not self.training:
             # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5, torch.ones(1), torch.zeros(1))
+            pred_labels = torch.where(pred_labels >= 0.5,
+                                      torch.ones(1).to(self.device),
+                                      torch.zeros(1).to(self.device))
             pred_labels = pred_labels.float()
 
         intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
         union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
 
         # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8)
+        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
 
-        relaxed_f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
+        f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
         # we want a (Batch_size x 1) tensor
-        relaxed_f1 = relaxed_f1.view(-1, 1)
-        return relaxed_f1
+        f1 = f1.view(-1, 1)
+        return f1
 
     def get_ini_labels(self, x, gt_labels=None):
         """
@@ -328,13 +331,10 @@ class DeepValueNetwork:
 
                 loss += self.loss_fn(oracle, output)
 
-                # round prediction to binary 0/1
-                pred_labels = pred_labels.round().int()
+                mean_f1.append(oracle.mean())
 
-                f1 = compute_f1_score(targets, pred_labels)
-                mean_f1.append(f1)
-
-        mean_f1 = np.mean(mean_f1)
+        mean_f1 = torch.stack(mean_f1)
+        mean_f1 = torch.mean(mean_f1)
         loss /= t_size
 
         if test_set:
