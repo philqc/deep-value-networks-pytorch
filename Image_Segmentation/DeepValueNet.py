@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """
 Created on Sat Feb 23 15:36:23 2019
-
 @author: Gabriel Hsu
 """
 
@@ -9,7 +8,6 @@ from __future__ import print_function, division
 
 import os
 import threading
-import time
 from queue import Queue, Empty
 
 import numpy as np
@@ -93,10 +91,13 @@ def f1_score(y_pred, y_true):
 
     intersect = torch.sum(torch.min(y_concat, 0)[0])
     union = torch.sum(torch.max(y_concat, 0)[0])
-    return 2 * intersect / float(intersect + max(10 ** -8, union))
+    return -1*intersect / max(10 ** -8, union)
 
 #%%
-
+def weights_init(m):
+    if isinstance(m, nn.Conv2d):
+        torch.nn.init.xavier_uniform(m.weight.data)
+        
 #define the DVN for Image segmentation (Can be any type of network u like)
 class DeepValueNet(nn.Module):
     
@@ -130,8 +131,17 @@ class DeepValueNet(nn.Module):
          return x
 
 #%%      
-         
-         
+def show_sample(img ,label, f1_score):
+#    plt.subplot(2,1,1)
+#    plt.imshow(np.squeeze(img.to('cpu').numpy()))
+    print('f1 =', f1_score)   
+
+def cross_entropy_loss(y_pred, y_true):
+    t1 = -1*y_true*torch.log(y_pred)
+    t2 = (1-y_true)*torch.log(1-y_pred)
+    
+    return torch.sum(t1-t2) /16
+    
          
 #define the training method  
 def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
@@ -148,8 +158,9 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
     test_imgs = imgs[301:]
     test_masks = masks[301:]
     
-    ls = nn.MSELoss()
     data_size = imgs.shape[0]
+    
+    ls = nn.BCELoss()
     
     #Training Process
     for epoch in range(0, epochs):
@@ -163,9 +174,9 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
             if queue.empty() != True:
                 #get training tuple from queue
                 image, label, f1_score = queue.get(timeout=10)
+#                show_sample(image, label, f1_score)
                 image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
                 input_data = torch.cat((image,label), 1)
-                
                 
                 #concatenate input as a 4 channel image 
                 output = model(input_data)
@@ -184,15 +195,16 @@ def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
 #%% The functions for creating training tuple
          
 #define Inference method for prediction
-def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_iterations=20):
+def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.001, num_iterations=20):
     """Run the inference"""
     
 #    model.eval()
 #    
 #    #figure out to(device)
 #    imgs = imgs.to(device)
+    
+    ls = nn.BCELoss()
     pred_masks = init_masks
-    ls = nn.MSELoss()
     
     with torch.enable_grad():
         for idx in range(0, num_iterations):
@@ -205,8 +217,8 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
                  value = loss
             else:
                 value = prediction
-                print (prediction)
-#                print(value)
+                print(value)
+#                print (value)
                 
             grad = torch.autograd.grad(value, input_data, grad_outputs=torch.ones_like(value),
                                            only_inputs=True)
@@ -214,8 +226,9 @@ def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.01, num_i
 #            print(grad[:,3:4,:,:].shape)
 #            print(pred_masks.shape)
             pred_masks += learning_rate * grad[:,3:4,:,:]
-            pred_masks[pred_masks < 0.] = 0
-            pred_masks[pred_masks > 0.] = 1
+            pred_masks = torch.clamp(pred_masks, 0, 1)
+#            pred_masks[pred_masks < 0.] = 0
+#            pred_masks[pred_masks > 0.] = 1
     
     return pred_masks 
     
@@ -226,7 +239,8 @@ def generate_examples(model, imgs, masks, train = False, val = False):
     
     """generate training tuple (adversarial or normal inference)"""
     
-    init_masks = torch.zeros_like(masks)
+    #fix the always zero label
+    init_masks = torch.randn(masks.shape[0], masks.shape[1], masks.shape[2], masks.shape[3]).to(device)
     
     #50% chance to get adversarial training sample
     if train and np.random.rand() >= 0.5:
@@ -316,58 +330,25 @@ if __name__ == "__main__":
     print(torch.cat((imgs[0:4],masks[0:4]),1).shape)
     #Create DVN 
     DVN = DeepValueNet().to(device)
-    
+    DVN.apply(weights_init)
 #    print the model summery
     print(DVN)
     
     #Visualize the output of each layer via torchSummary
     summary(DVN, (4, 32, 32))
 
+    
+#   inference test
+    pred_mask = inference(DVN, imgs[0:16].to(device), torch.zeros_like(masks[0:16]).to(device), gt_labels = None, learning_rate=0.5, num_iterations=20)
 
-#%%function Tests
     
-    #f1_score batch test
-#    s = f1_score_batch(masks[0:4], masks[3:7])
-#    print (s)
-    #queue test
-#    q = create_sample_queue(DVN, imgs.to(device), masks.to(device), 5, num_threads = 1)
-#    print (q.qsize())
-#    while True:
-#        if(q.empty()):
-#            print('Queue is empty')
-#            break;
-#        print('take a element from Queue')
-#        a, b, c = q.get(timeout=10)
-#        break;
-       
-        
-#
-#    inference test
-#    pred_mask = inference(DVN, imgs[0:16].to(device), torch.zeros_like(masks[0:16]).to(device), gt_labels = None, learning_rate=0.01, num_iterations=20)
-#    a = pred_mask.to('cpu').numpy()
-#    b = a[1]    
-#    plt.imshow(np.squeeze(b))
-    
-#    scores = f1_score_batch(pred_mask, masks[0:16].to(device))
-#    print(scores)
 
 #%%  
 
-#    
-#    #choose the optimizer 
-    optimizer = optim.Adam(DVN.parameters(), lr=0.05)
-#    
-#    #training
+
+#    choose the optimizer 
+    optimizer = optim.Adam(DVN.parameters(), lr=0.5)
+    #training
     train(imgs.to(device), masks.to(device), DVN, device, 16, optimizer, 200)
-#%%
-#    inference test
-    pred_mask = inference(DVN, imgs[0:16].to(device), torch.zeros_like(masks[0:16]).to(device), gt_labels = None, learning_rate=0.05, num_iterations=20)
-    a = pred_mask.to('cpu').numpy()
-    b = a[1]    
-    plt.imshow(np.squeeze(b))
-    
-#    scores = f1_score_batch(torch.zeros_like(masks[0:16]).to(device), masks[0:16].to(device))
-#    print(scores)
-    
-    
+
     
