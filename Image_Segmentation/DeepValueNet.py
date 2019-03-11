@@ -23,12 +23,14 @@ from torchvision import transforms, utils
 import pickle
 import pdb
 import torch.optim as optim
+from scipy.misc import imsave, imresize
 #from torchsummary import summary
 from auxiliary_functions import *
 import random
 #Ignore warnings
 import warnings 
 warnings.filterwarnings("ignore")
+
 
 
 __author__ = "HSU CHIH-CHAO, University of Montreal"
@@ -162,7 +164,8 @@ class DeepValueNetwork:
         self.feature_dim = feature_dim
         self.label_dim = label_dim
         self.inf_lr = inf_lr
-
+        #for visualization purpose in "inference" function
+        self.filename = 0
         # Deep Value Network is just a ConvNet
         self.model = ConvNet(non_linearity).to(self.device)
 
@@ -300,10 +303,19 @@ class DeepValueNetwork:
                 y = y + optim_inf.update(y_grad)
                 # Project back to the valid range
                 y = torch.clamp(y, 0, 1)
+                
+                #visualize all the inference process while training
+                if self.training:
+                    img = y.detach().cpu().numpy()
+                    for timestep in range(img.shape[0]):
+                        i = np.transpose(img[0], (1, 2, 0))
+                        plt.imsave("./pred/" + str(self.filename)+ "_" + str(timestep)+".png", np.squeeze(i))
+                self.filename+=1
 
         if self.training:
             self.model.train()
 
+        
         return y
 
     def train(self, ep):
@@ -332,6 +344,10 @@ class DeepValueNetwork:
 
             loss.backward()
             self.optimizer.step()
+            
+#            if oracle.mean() > 0:
+#                print(oracle) 
+            
 
             if batch_idx % 2 == 0:
                 print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
@@ -364,7 +380,6 @@ class DeepValueNetwork:
                 output = self.model(inputs, pred_labels)
 
                 loss += self.loss_fn(oracle, output)
-
                 mean_iou.append(oracle.mean())
 
         mean_iou = torch.stack(mean_iou)
@@ -594,7 +609,7 @@ if __name__ == "__main__":
     DVN = DeepValueNetwork(WhorseDataset, use_cuda,
                            add_adversarial=True, add_ground_truth=False,
                            batch_size=16, batch_size_eval=16,
-                           non_linearity=nn.ReLU())
+                           inf_lr=50, non_linearity=nn.ReLU())
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)
@@ -615,5 +630,16 @@ if __name__ == "__main__":
         with open(save_results_file, 'wb') as fout:
             pickle.dump(results, fout)
 
-    plot_results(results)
+#    plot_results(results)
     torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+    
+#%%
+
+test = WhorseDataset[1]
+
+
+
+
+
+    
+    
