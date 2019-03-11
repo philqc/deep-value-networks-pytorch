@@ -309,7 +309,7 @@ class DeepValueNetwork:
                     img = y.detach().cpu().numpy()
                     for timestep in range(img.shape[0]):
                         i = np.transpose(img[0], (1, 2, 0))
-                        plt.imsave("./pred/" + str(self.filename)+ "_" + str(timestep)+".png", np.squeeze(i))
+                        plt.imsave("./pred/" + str(self.filename)+ "_" + str(timestep)+".jpg", np.squeeze(i))
                 self.filename+=1
 
         if self.training:
