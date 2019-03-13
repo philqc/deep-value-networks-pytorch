@@ -148,10 +148,11 @@ class ConvNet(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, dataset, mean_mask, use_cuda, add_adversarial=True,
-                 add_ground_truth=False, stratified_sampling=False, batch_size=16, batch_size_eval=16,
-                 learning_rate=1e-3, inf_lr=0.5, feature_dim=(32, 32), label_dim=(32, 32),
-                 non_linearity=nn.ReLU()):
+    def __init__(self, dataset, mean_mask, use_cuda, adversarial_sampling=True,
+                 gt_sampling=False, stratified_sampling=False, batch_size=16, batch_size_eval=16,
+                 learning_rate=1e-3, inf_lr=0.5, momentum_inf=0, feature_dim=(32, 32), label_dim=(32, 32),
+                 non_linearity=nn.ReLU(), n_steps_inf=20, n_steps_inf_adversarial=1, lr_decay_inf_iteration=1,
+                 lr_decay_inf_epoch=1, optimizer_inf='adam'):
         """
         Parameters
         ----------
@@ -174,17 +175,26 @@ class DeepValueNetwork:
         self.device = torch.device("cuda" if use_cuda else "cpu")
         self.mean_mask = mean_mask.to(self.device)
 
-        self.add_adversarial = add_adversarial
-        self.add_ground_truth = add_ground_truth
+        self.adversarial_sampling = adversarial_sampling
+        self.gt_sampling = gt_sampling
         self.stratified_sampling = stratified_sampling
         if self.stratified_sampling:
             raise ValueError('Stratified sampling is not yet implemented!')
-        if self.add_ground_truth and self.add_adversarial:
+        if self.gt_sampling and self.adversarial_sampling:
             raise ValueError('Adversarial examples and Adding Ground Truth are both set to true !')
 
         self.feature_dim = feature_dim
         self.label_dim = label_dim
+
+        # Inference hyperparameters
+        self.n_steps_inf_adversarial = n_steps_inf_adversarial
+        self.n_steps_inf = n_steps_inf
+        self.lr_decay_inf_epoch = lr_decay_inf_epoch
+        self.lr_decay_inf_iteration = lr_decay_inf_iteration
+        self.optimizer_inf = optimizer_inf
         self.inf_lr = inf_lr
+        self.momentum_inf = momentum_inf
+        ################################
 
         # for visualization purpose in "inference" function
         self.filename_train_other, self.filename_train_inf, self.filename_valid = 0, 0, 0
@@ -283,7 +293,7 @@ class DeepValueNetwork:
         y.requires_grad = True
         return y
 
-    def generate_output(self, x, gt_labels):
+    def generate_output(self, x, gt_labels, ep=1):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different
@@ -294,31 +304,42 @@ class DeepValueNetwork:
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
 
-        if self.add_adversarial and self.training and np.random.rand() >= 0.5:
+        if self.adversarial_sampling and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
-            pred_labels = self.inference(x, init_labels, gt_labels=gt_labels, num_iterations=1)
-        elif self.add_ground_truth and self.training and np.random.rand() >= 0.5:
+            pred_labels = self.inference(x, init_labels, gt_labels=gt_labels,
+                                         num_iterations=self.n_steps_inf_adversarial)
+        elif self.gt_sampling and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
         else:
             init_labels = self.get_ini_labels(x)
-            pred_labels = self.inference(x, init_labels)
+            pred_labels = self.inference(x, init_labels, num_iterations=self.n_steps_inf)
 
         return pred_labels
 
-    def inference(self, x, y, gt_labels=None, num_iterations=20):
+    def inference(self, x, y, gt_labels=None, num_iterations=20, ep=1):
 
         if self.training:
             self.model.eval()
 
-        optim_inf = SGD(y, lr=500, momentum=0.9)
-        #optim_inf = Adam(y, lr=50)
+        if self.optimizer_inf.lower() == 'sgd':
+            optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
+        elif self.optimizer_inf.lower() == 'adam':
+            optim_inf = Adam(y, lr=self.inf_lr)
+        else:
+            raise ValueError('Error: Unknown optimizer for inference:', self.optimizer_inf)
+
+        # For hyperparameter search, check if we should reduce learning rate every epoch
+        # as gradients become more significant
+        optim_inf.lr /= (self.lr_decay_inf_epoch ** ep)
 
         with torch.enable_grad():
 
             for i in range(num_iterations):
+
+                optim_inf.lr /= self.lr_decay_inf_iteration
 
                 if gt_labels is not None:  # Adversarial
                     oracle = self.get_oracle_value(y, gt_labels)
@@ -375,7 +396,7 @@ class DeepValueNetwork:
 
             self.model.zero_grad()
 
-            pred_labels = self.generate_output(inputs, targets)
+            pred_labels = self.generate_output(inputs, targets, ep)
             oracle = self.get_oracle_value(pred_labels, targets)
             output = self.model(inputs, pred_labels)
 
@@ -387,7 +408,6 @@ class DeepValueNetwork:
             
 #            if oracle.mean() > 0:
 #                print(oracle) 
-            
 
             if batch_idx % 2 == 0:
                 print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
@@ -401,7 +421,7 @@ class DeepValueNetwork:
         print('')
         return t_loss
 
-    def valid(self, loader, test_set=False):
+    def valid(self, loader, test_set=False, ep=1):
 
         self.model.eval()
         self.training = False
@@ -415,7 +435,7 @@ class DeepValueNetwork:
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels = self.generate_output(inputs, targets)
+                pred_labels = self.generate_output(inputs, targets, ep)
                 oracle = self.get_oracle_value(pred_labels, targets)
                 output = self.model(inputs, pred_labels)
 
@@ -470,6 +490,116 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
     return tuple_queue
 
 
+def run_the_model(dataset, dir_path, mean_mask, use_cuda, save_model, batch_size, batch_size_eval,
+                  adversarial_sampling=False, gt_sampling=False, stratified_sampling=False,
+                  optimizer_inf='adam', inf_lr=5, momentum_inf=np.nan, lr_decay_inf_iteration=1,
+                  lr_decay_inf_epoch=1, n_steps_inf=20, n_steps_inf_adversarial=1,
+                  step_size_scheduler_main=30, gamma_scheduler_main=0.1):
+
+    DVN = DeepValueNetwork(dataset, mean_mask, use_cuda,
+                           adversarial_sampling=adversarial_sampling, gt_sampling=gt_sampling,
+                           stratified_sampling=stratified_sampling, optimizer_inf=optimizer_inf,
+                           batch_size=batch_size, batch_size_eval=batch_size_eval, inf_lr=inf_lr,
+                           momentum_inf=momentum_inf, lr_decay_inf_iteration=lr_decay_inf_iteration,
+                           lr_decay_inf_epoch=lr_decay_inf_epoch, n_steps_inf=n_steps_inf,
+                           n_steps_inf_adversarial=n_steps_inf_adversarial, non_linearity=nn.ReLU())
+
+    # Decay the learning rate by a factor of gamma every step_size # of epochs
+    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=step_size_scheduler_main,
+                                                gamma=gamma_scheduler_main)
+
+    results = {'name': 'DVN_Whorse', 'loss_train': [],
+               'loss_valid': [], 'IOU_valid': [], 'batch_size': batch_size,
+               'batch_size_eval': batch_size_eval, 'optimizer_inf': optimizer_inf,
+               'adversarial_sampling': adversarial_sampling, 'gt_sampling': gt_sampling,
+               'stratified_sampling': stratified_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf,
+               'lr_decay_inf_iteration': lr_decay_inf_iteration, 'lr_decay_inf_epoch': lr_decay_inf_epoch,
+               'momentum_inf': momentum_inf, 'step_size_scheduler_main': step_size_scheduler_main,
+               'gamma_scheduler_main': gamma_scheduler_main, 'n_steps_inf_adversarial': n_steps_inf_adversarial}
+
+    results_path = dir_path + '/results/'
+    if not os.path.isdir(results_path):
+        os.makedirs(results_path)
+
+    # Increment a counter so that previous results with the same args will not
+    # be overwritten. Comment out the next four lines if you only want to keep
+    # the most recent results.
+    i = 0
+    while os.path.exists(results_path + str(i)):
+        i += 1
+    results_path = results_path + str(i)
+
+    stop_after_x = 25
+    iou_val_history = stop_after_x * [-100]
+
+    for epoch in range(200):
+        loss_train = DVN.train(epoch)
+        loss_valid, iou_valid = DVN.valid(DVN.valid_loader, ep=epoch)
+        scheduler.step()
+        results['loss_train'].append(loss_train)
+        results['loss_valid'].append(loss_valid)
+        results['IOU_valid'].append(iou_valid)
+
+        with open(results_path + '.pkl', 'wb') as fout:
+            pickle.dump(results, fout)
+
+        # Early stopping #
+        # number between 0 and stop_after_x
+        i = epoch % stop_after_x
+        iou_valid = iou_valid.cpu().numpy()
+        if iou_valid < 0.01 + np.mean(iou_val_history):
+            print('Accuracy has not even improved 1%% since %s iterations; mean_last_iou = %.2f%%; new = %.2f%%'
+                  % (stop_after_x, np.mean(iou_val_history) * 100, iou_valid * 100))
+            print('--> We stop')
+            break
+        iou_val_history[i] = iou_valid
+
+    if save_model:
+        torch.save(DVN.model.state_dict(), results_path + '.pth')
+
+
+def random_hyper_parameter_search(dataset, dir_path, mean_mask, use_cuda, n_search, save_model):
+
+    ls_batch_size = [8, 16, 32]
+    batch_size_eval = 40
+
+    ls_step_size_scheduler_main = [20, 30, 40, 50, 75, 100, 150, 200, 300]
+    ls_gamma_scheduler_main = [0.1, 0.25, 0.5, 0.75, 1]
+
+    ls_n_steps_inf = [10, 15, 20, 20, 25, 30, 35, 40, 50, 100]
+    ls_n_steps_inf_adversarial = [1, 1, 1, 2, 3, 5, 10]
+    ls_lr_decay_inf_iteration = [1, 1, 1.05, 1.1, 1.15, 1.25, 1.5, 2]
+    ls_lr_decay_inf_epoch = [1, 1, 1.05, 1.1, 1.15, 1.25, 1.5, 2]
+
+    ls_optim_inf = ['adam', 'sgd']
+    optim_inf = random.choice(ls_optim_inf)
+
+    for i in range(n_search):
+        print('\n----------------------------------------------')
+        print(i, ' iteration of random search \n\n')
+        adversarial_sampling = True if np.random.rand() > 0.5 else False
+        gt_sampling = not adversarial_sampling
+
+        if optim_inf == 'adam':
+            ls_inf_lr = [1e-3, 1e-2, 1e-1, 1, 2, 5, 10, 10, 25, 50, 100]
+            momentum_inf = 0
+        else:
+            ls_inf_lr = [1e-2, 1e-1, 1, 5, 10, 25, 50, 100, 250, 500, 1000]
+            momentum_inf = np.random.rand()
+
+        run_the_model(dataset, dir_path, mean_mask, use_cuda, save_model, batch_size=random.choice(ls_batch_size),
+                      batch_size_eval=batch_size_eval, adversarial_sampling=adversarial_sampling,
+                      gt_sampling=gt_sampling, optimizer_inf=optim_inf, inf_lr=random.choice(ls_inf_lr),
+                      momentum_inf=momentum_inf,
+                      lr_decay_inf_iteration=random.choice(ls_lr_decay_inf_iteration),
+                      lr_decay_inf_epoch=random.choice(ls_lr_decay_inf_epoch),
+                      n_steps_inf=random.choice(ls_n_steps_inf),
+                      n_steps_inf_adversarial=random.choice(ls_n_steps_inf_adversarial),
+                      step_size_scheduler_main=random.choice(ls_step_size_scheduler_main),
+                      gamma_scheduler_main=random.choice(ls_gamma_scheduler_main)
+                      )
+
+
 if __name__ == "__main__":
     
     dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -480,9 +610,6 @@ if __name__ == "__main__":
     image_dir = dir_path + '/images'
     mask_dir = dir_path + '/masks'
 
-    batch_size = 16
-    batch_size_eval = 16
-
     # Use Dataset to resize and convert to Tensor
     WhorseDataset = WeizmannHorseDataset(image_dir, mask_dir, test_set=False,
                                          transform=transforms.Compose([
@@ -492,29 +619,9 @@ if __name__ == "__main__":
 
     mean_mask = WhorseDataset.compute_mean_mask()
 
-    DVN = DeepValueNetwork(WhorseDataset, mean_mask, use_cuda,
-                           add_adversarial=True, add_ground_truth=False,
-                           batch_size=batch_size, batch_size_eval=batch_size_eval,
-                           inf_lr=50, non_linearity=nn.ReLU())
-
-    # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)
-
-    results = {'name': 'DVN_Whorse', 'loss_train': [],
-               'loss_valid': [], 'IOU_valid': []}
-
-    save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
-
-    for epoch in range(1):
-        loss_train = DVN.train(epoch)
-        loss_valid, IOU_valid = DVN.valid(DVN.valid_loader)
-        scheduler.step()
-        results['loss_train'].append(loss_train)
-        results['loss_valid'].append(loss_valid)
-        results['IOU_valid'].append(IOU_valid)
-
-        with open(save_results_file, 'wb') as fout:
-            pickle.dump(results, fout)
+    # Launch hyperparameter search
+    random_hyper_parameter_search(WhorseDataset, dir_path, mean_mask,
+                                  use_cuda, n_search=100, save_model=False)
 
     # plot_results(results)
-    torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+
