@@ -1,11 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Sat Feb 23 15:36:23 2019
-@author: Gabriel Hsu
-"""
-
 from __future__ import print_function, division
-
 import os
 import threading
 from queue import Queue, Empty
@@ -28,13 +22,10 @@ from scipy.misc import imsave, imresize
 from auxiliary_functions import *
 import random
 #Ignore warnings
-import warnings 
+import warnings
 warnings.filterwarnings("ignore")
 
-
-
-__author__ = "HSU CHIH-CHAO, University of Montreal"
-#%% data preprocessing 
+__author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
 
 # build the dataset, generate the "training tuple"
@@ -83,11 +74,40 @@ class WeizmannHorseDataset(Dataset):
         
         if self.transform:
             image = self.transform(image)
-            
-            #create a channel for mask so as to transform
+            # create a channel for mask so as to transform
             mask = self.transform(np.expand_dims(mask, axis=2))
             
         return image, mask
+
+    def compute_mean_mask(self):
+        n_images = len(self.img_names)
+        masks = []
+        for i in range(n_images):
+            mask_name = os.path.join(self.mask_dir, self.mask_names[i])
+            mask = io.imread(mask_name)
+
+            if self.transform:
+                # create a channel for mask so as to transform
+                mask = self.transform(np.expand_dims(mask, axis=2))
+
+            masks.append(mask)
+
+        # after torch.stack, we should have n_images x 1 x 32 x 32
+        masks = torch.stack(masks)
+        height, width = masks.shape[2], masks.shape[3]
+        # flatten
+        masks = masks.view(n_images, 1, -1)
+        mean_mask = torch.mean(masks, dim=0)
+        # go back to 32 x 32 view
+        mean_mask = mean_mask.view(1, 1, height, width)
+
+        print_mask = False
+        if print_mask:
+            img_to_show = mean_mask.squeeze(0)
+            img_to_show = img_to_show.squeeze(0)
+            show_img(img_to_show, black_and_white=True)
+
+        return mean_mask
 
 
 class ConvNet(nn.Module):
@@ -128,7 +148,7 @@ class ConvNet(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, dataset, use_cuda, add_adversarial=True,
+    def __init__(self, dataset, mean_mask, use_cuda, add_adversarial=True,
                  add_ground_truth=False, stratified_sampling=False, batch_size=16, batch_size_eval=16,
                  learning_rate=1e-3, inf_lr=0.5, feature_dim=(32, 32), label_dim=(32, 32),
                  non_linearity=nn.ReLU()):
@@ -152,6 +172,7 @@ class DeepValueNetwork:
         """
 
         self.device = torch.device("cuda" if use_cuda else "cpu")
+        self.mean_mask = mean_mask.to(self.device)
 
         self.add_adversarial = add_adversarial
         self.add_ground_truth = add_ground_truth
@@ -164,8 +185,18 @@ class DeepValueNetwork:
         self.feature_dim = feature_dim
         self.label_dim = label_dim
         self.inf_lr = inf_lr
-        #for visualization purpose in "inference" function
-        self.filename = 0
+
+        # for visualization purpose in "inference" function
+        self.filename_train_other, self.filename_train_inf, self.filename_valid = 0, 0, 0
+        # if directory doesn't exist, create it
+        dir_predict_imgs = dir_path + '/pred/'
+        self.dir_train_inf_img = dir_predict_imgs + '/train_inference/'
+        self.dir_train_adversarial_img = dir_predict_imgs + '/train_adversarial/'
+        self.dir_valid_img = dir_predict_imgs + '/valid/'
+        for directory in [self.dir_train_inf_img, self.dir_train_adversarial_img, self.dir_valid_img]:
+            if not os.path.isdir(directory):
+                os.makedirs(directory)
+
         # Deep Value Network is just a ConvNet
         self.model = ConvNet(non_linearity).to(self.device)
 
@@ -175,23 +206,23 @@ class DeepValueNetwork:
         self.batch_size = batch_size
         self.batch_size_eval = batch_size_eval
 
-        self.n_train = int(len(dataset) * 0.80)
-        self.n_valid = len(dataset) - self.n_train
+        self.n_train = int(len(WhorseDataset) * 0.80)
+        self.n_valid = len(WhorseDataset) - self.n_train
 
         print('Using a {} train {} validation split'.format(self.n_train, self.n_valid))
-        indices = list(range(len(dataset)))
+        indices = list(range(len(WhorseDataset)))
         random.shuffle(indices)
 
         self.train_loader = DataLoader(
             dataset,
-            batch_size=self.batch_size,
+            batch_size=batch_size,
             sampler=SubsetRandomSampler(indices[:self.n_train]),
             pin_memory=use_cuda
         )
 
         self.valid_loader = DataLoader(
             dataset,
-            batch_size=self.batch_size_eval,
+            batch_size=batch_size_eval,
             sampler=SubsetRandomSampler(indices[self.n_train:]),
             pin_memory=use_cuda
         )
@@ -240,10 +271,13 @@ class DeepValueNetwork:
         y = torch.zeros(x.size()[0], 1, self.label_dim[0], self.label_dim[1],
                         dtype=torch.float32, device=self.device)
 
+        # SHOULD WE START ALSO HALF ADVERSARIAL LABELS AT MEAN MASK ?
         if gt_labels is not None:
-            # 50%: Start from GT; rest: start from zeros
+            # 50% of initialization labels: Start from GT; rest: start from zeros
             gt_indices = torch.rand(gt_labels.shape[0]).float().to(self.device) > 0.5
             y[gt_indices] = gt_labels[gt_indices]
+        else:
+            y = self.mean_mask.expand(x.size()[0], -1, -1, -1)
 
         # Set requires_grad=True after in_place operation (changing the indices)
         y.requires_grad = True
@@ -279,8 +313,8 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
-        #optim_inf = SGD(y, lr=3, momentum=0.9)
-        optim_inf = Adam(y, lr=0.5)
+        optim_inf = SGD(y, lr=500, momentum=0.9)
+        #optim_inf = Adam(y, lr=50)
 
         with torch.enable_grad():
 
@@ -299,23 +333,29 @@ class DeepValueNetwork:
                                            only_inputs=True)
 
                 y_grad = grad[0].detach()
-                #pdb.set_trace()
-                y = y + optim_inf.update(y_grad)
+                y_new = y + optim_inf.update(y_grad)
                 # Project back to the valid range
-                y = torch.clamp(y, 0, 1)
-                
-                #visualize all the inference process while training
-                if self.training:
-                    img = y.detach().cpu().numpy()
-                    for timestep in range(img.shape[0]):
-                        i = np.transpose(img[0], (1, 2, 0))
-                        plt.imsave("./pred/" + str(self.filename)+ "_" + str(timestep)+".jpg", np.squeeze(i))
-                self.filename+=1
+                y_new = torch.clamp(y_new, 0, 1)
+                #pdb.set_trace()
+                y = y_new
+                # visualize all the inference process while training
+                if i == num_iterations - 1:
+                    img = y_new.detach().cpu()
+                    if self.training:
+                        if gt_labels is not None:
+                            directory = self.dir_train_adversarial_img + str(self.filename_train_other)
+                            self.filename_train_other += 1
+                        else:
+                            directory = self.dir_train_inf_img + str(self.filename_train_inf)
+                            self.filename_train_inf += 1
+                    else:
+                        directory = self.dir_valid_img + str(self.filename_valid)
+                        self.filename_valid += 1
+                    save_grid_imgs(img, directory)
 
         if self.training:
             self.model.train()
 
-        
         return y
 
     def train(self, ep):
@@ -395,192 +435,33 @@ class DeepValueNetwork:
 
         return loss.item(), mean_iou
 
-        
-#%% extended domain oracle value function
-#define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?) 
-        
-def f1_score_batch(y_pred, y_true):
-    batch_size = y_pred.shape[0]
-    scores = torch.zeros(batch_size, 1)
-    for i in range(batch_size):
-        scores[i] = f1_score(y_pred[i], y_true[i])
-    
-    return scores
 
-#y_pred and y_true are all "torch tensor"
-def f1_score(y_pred, y_true):
-    
-    y_pred = torch.flatten(y_pred).reshape(1,-1)
-    y_true = torch.flatten(y_true).reshape(1,-1)
-
-    y_concat = torch.cat([y_pred, y_true], 0)
-
-    intersect = torch.sum(torch.min(y_concat, 0)[0])
-    union = torch.sum(torch.max(y_concat, 0)[0])
-    return intersect / max(10 ** -8, union)
-
-#%%
-def weights_init(m):
-    if isinstance(m, nn.Conv2d):
-        torch.nn.init.xavier_uniform(m.weight.data)
-        
-#define the DVN for Image segmentation (Can be any type of network u like)
-
-#%%      
-def show_sample(img ,label, f1_score):
-#    plt.subplot(2,1,1)
-#    plt.imshow(np.squeeze(img.to('cpu').numpy()))
-    print('f1 =', f1_score)   
-
-def cross_entropy_loss(y_pred, y_true):
-    t1 = -1*y_true*torch.log(y_pred)
-    t2 = (1-y_true)*torch.log(1-y_pred)
-    
-    return torch.sum(t1-t2) /16
-    
-         
-#define the training method  
-def train(imgs, masks, model, device, batch_size, optimizer, epochs) :
-    
-    model.train()
-    
-    #split the dataset
-    train_imgs = imgs[0:200]
-    train_masks = masks[0:200]
-    
-    val_imgs = imgs[201:300]
-    val_masks = masks[201:300]
-    
-    test_imgs = imgs[301:]
-    test_masks = masks[301:]
-    
-    data_size = imgs.shape[0]
-    
-    ls = nn.BCEWithLogitsLoss()
-    
-    #Training Process
-    for epoch in range(0, epochs):
-        #shuffle the training dataset
-        train_loss = 0
-        print('epoch:', epoch)
-        queue = create_sample_queue(model, train_imgs, train_masks, batch_size)
-        model.zero_grad()
-        optimizer.zero_grad()
-        while True:
-            if queue.empty() != True:
-                #get training tuple from queue
-                image, label, f1_score = queue.get(timeout=10)
-#                show_sample(image, label, f1_score)
-                image, label, f1_score = image.to(device), label.to(device), f1_score.to(device)
-                input_data = torch.cat((image,label), 1)
-                
-                #concatenate input as a 4 channel image 
-                output = model(input_data)
-                loss = ls(output, f1_score)
-                loss.backward()
-                optimizer.step()
-                train_loss+=loss.item()
-            else:
-                break
-    
-#        train_loss /= data_size
-        print("Training loss = ", train_loss)
-    
-    return train_loss
-    
-#%% The functions for creating training tuple
-         
-#define Inference method for prediction
-def inference(model, imgs, init_masks, gt_labels=None, learning_rate=0.5, num_iterations=20):
-    """Run the inference"""
-    
-#    model.eval()
-#    
-#    #figure out to(device)
-#    imgs = imgs.to(device)
-    
-    ls = nn.BCEWithLogitsLoss()
-    pred_masks = init_masks
-    
-    with torch.enable_grad():
-        for idx in range(0, num_iterations):
-            input_data = Variable(torch.cat((imgs, pred_masks), 1), requires_grad = True)
-            prediction = model(input_data)
-            if gt_labels is not None:
-                 v = f1_score_batch(pred_masks, gt_labels)
-                 loss = ls(prediction.to(device), v.to(device))
-#                 print('loss', loss.item())
-                 value = loss
-            else:
-                value = torch.sigmoid(prediction)
-
-                print('value =', value)
-#                print (value)
-                
-            grad = torch.autograd.grad(value, input_data, grad_outputs=torch.ones_like(value),
-                                           only_inputs=True)
-            grad = grad[0].detach()
-#            print(grad[:,3:4,:,:].shape)
-#            print(pred_masks.shape)
-            pred_masks += learning_rate * grad[:,3:4,:,:]
-            pred_masks = torch.clamp(pred_masks, 0, 1)
-    
-    return pred_masks 
-    
-    
-
-#generate training tuples during training
-def generate_examples(model, imgs, masks, train = False, val = False):
-    
-    """generate training tuple (adversarial or normal inference)"""
-    
-    #fix the always zero label
-    init_masks = torch.randn(masks.shape[0], masks.shape[1], masks.shape[2], masks.shape[3]).to(device)
-    
-    #50% chance to get adversarial training sample
-    if train and np.random.rand() >= 0.5:
-        #Initialize 50% Ground truth y_pred, 50% from zero matrices
-        gt_sample_choice = torch.randn(masks.shape[0]) > 0.5
-        init_masks[gt_sample_choice] = masks[gt_sample_choice]
-        pred_masks = inference(model, imgs, init_masks, masks, num_iterations = 1)
-        
-    else:
-        pred_masks = inference(model, imgs, init_masks)
-        
-    
-    #create correspond f1_scores for pred_masks
-    scores = f1_score_batch(pred_masks, masks)
-
-        
-    return pred_masks, scores
-    
-#create syncrhonized queue to accumulate the sample:
+# create synchronized queue to accumulate the sample:
 def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads = 5):
-    #need to reconsider the maxsize
+    # need to reconsider the maxsize
     tuple_queue = Queue()
     indices_queue = Queue()
     for idx in np.arange(0, train_imgs.shape[0], batch_size):
         indices_queue.put(idx)
 
-    #parallel work here
+    # parallel work here
     def generate():
         try:
             while True:
-                #get a batch
+                # get a batch
                 idx = indices_queue.get_nowait()
 #                print(idx)
                 imgs = train_imgs[idx: min(train_imgs.shape[0], idx + batch_size)]
                 masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
 
-                #generate data (training tuples)
-                pred_masks, f1_scores = generate_examples(model, imgs, masks, train = True)
-                tuple_queue.put((imgs, pred_masks, f1_scores))
+                # generate data (training tuples)
+                # pred_masks, f1_scores = generate_examples(model, imgs, masks, train=True)
+                # tuple_queue.put((imgs, pred_masks, f1_scores))
                 
         except Empty:
-            #put empty object as a end signal
+            # put empty object as a end signal
             print("empty detect")
-            
-        
+
     for _ in range(num_threads):
         thread = threading.Thread(target = generate)
         thread.start()
@@ -596,8 +477,11 @@ if __name__ == "__main__":
     # Use GPU if it is available
     use_cuda = torch.cuda.is_available()
     
-    image_dir = './images'
-    mask_dir = './masks'
+    image_dir = dir_path + '/images'
+    mask_dir = dir_path + '/masks'
+
+    batch_size = 16
+    batch_size_eval = 16
 
     # Use Dataset to resize and convert to Tensor
     WhorseDataset = WeizmannHorseDataset(image_dir, mask_dir, test_set=False,
@@ -606,9 +490,11 @@ if __name__ == "__main__":
                                                transforms.Resize(size=(32, 32)),
                                                transforms.ToTensor()]))
 
-    DVN = DeepValueNetwork(WhorseDataset, use_cuda,
+    mean_mask = WhorseDataset.compute_mean_mask()
+
+    DVN = DeepValueNetwork(WhorseDataset, mean_mask, use_cuda,
                            add_adversarial=True, add_ground_truth=False,
-                           batch_size=16, batch_size_eval=16,
+                           batch_size=batch_size, batch_size_eval=batch_size_eval,
                            inf_lr=50, non_linearity=nn.ReLU())
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
@@ -619,7 +505,7 @@ if __name__ == "__main__":
 
     save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
 
-    for epoch in range(60):
+    for epoch in range(1):
         loss_train = DVN.train(epoch)
         loss_valid, IOU_valid = DVN.valid(DVN.valid_loader)
         scheduler.step()
@@ -630,16 +516,5 @@ if __name__ == "__main__":
         with open(save_results_file, 'wb') as fout:
             pickle.dump(results, fout)
 
-#    plot_results(results)
+    # plot_results(results)
     torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
-    
-#%%
-
-test = WhorseDataset[1]
-
-
-
-
-
-    
-    

@@ -214,7 +214,7 @@ if __name__ == "__main__":
     scheduler = torch.optim.lr_scheduler.StepLR(F_Net.model.optimizer, step_size=25, gamma=0.1)
 
     # Train for 10 epochs as the INFNET paper
-    for epoch in range(10):
+    for epoch in range(1):
         loss_train = F_Net.train(epoch)
         loss_valid, mean_f1 = F_Net.valid()
         scheduler.step()

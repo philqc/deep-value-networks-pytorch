@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import pickle
 import os
 import torch
+from torchvision import utils
 
 
 class Adam:
@@ -77,6 +78,35 @@ class MyDataset(Dataset):
 
     def __len__(self):
         return len(self.inputs)
+
+
+def show_img(img, black_and_white=True):
+    np_img = img.numpy()
+    # put channel at the end for plt.imshow
+    if np_img.ndim == 3:
+        np_img = np.transpose(np_img, (1, 2, 0))
+
+    print('np_img.shape', np_img.shape)
+    if black_and_white:
+        plt.imshow(np_img, cmap='Greys_r')
+        plt.show()
+    else:
+        plt.imshow(np_img)
+        plt.show()
+
+
+def save_img(img, path_to_save, black_and_white=True):
+    np_img = img.numpy()
+    np_img = np.transpose(np_img, (1, 2, 0))
+    if black_and_white:
+        plt.imsave(path_to_save + ".jpg", np_img, cmap='Greys_r')
+    else:
+        plt.imsave(path_to_save + ".jpg", np_img)
+
+
+def save_grid_imgs(input_imgs, path_to_save, black_and_white=True):
+    img = utils.make_grid(input_imgs, nrow=8)
+    save_img(img, path_to_save, black_and_white)
 
 
 def print_a_sentence(x, y, txt_inputs, txt_labels):
