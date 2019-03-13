@@ -112,7 +112,6 @@ class WeizmannHorseDataset(Dataset):
 
 class ConvNet(nn.Module):
 
-    # define each layer of neural network
     def __init__(self, non_linearity=nn.ReLU()):
         super().__init__()
         # Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
@@ -128,8 +127,11 @@ class ConvNet(nn.Module):
         self.fc2 = nn.Linear(384, 192)
         self.fc3 = nn.Linear(192, 1)
         self.non_linearity = non_linearity
+        # apply dropout on the first FC layer as paper mentioned
+        self.dropout = nn.Dropout(p=0.25)
 
-    # define how input will be processed through those layers
+        # define how input will be processed through those layers
+
     def forward(self, x, y):
         # We first concatenate the img and the mask
         z = torch.cat((x, y), 1)
@@ -139,8 +141,8 @@ class ConvNet(nn.Module):
         # don't forget to flatten before connect to FC layers
         z = z.view(-1, 128 * 4 * 4)
         z = self.non_linearity(self.fc1(z))
-        # apply dropout on the first FC layer as paper mentioned
-        z = F.dropout(z, p=0.75)
+
+        z = self.dropout(z)
         z = self.non_linearity(self.fc2(z))
         z = self.non_linearity(self.fc3(z))
         return z
@@ -293,7 +295,7 @@ class DeepValueNetwork:
         y.requires_grad = True
         return y
 
-    def generate_output(self, x, gt_labels, ep=1):
+    def generate_output(self, x, gt_labels, ep=0):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different
@@ -308,18 +310,19 @@ class DeepValueNetwork:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             pred_labels = self.inference(x, init_labels, gt_labels=gt_labels,
-                                         num_iterations=self.n_steps_inf_adversarial)
+                                         num_iterations=self.n_steps_inf_adversarial, ep=ep)
         elif self.gt_sampling and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
         else:
             init_labels = self.get_ini_labels(x)
-            pred_labels = self.inference(x, init_labels, num_iterations=self.n_steps_inf)
+            pred_labels = self.inference(x, init_labels,
+                                         num_iterations=self.n_steps_inf, ep=ep)
 
         return pred_labels
 
-    def inference(self, x, y, gt_labels=None, num_iterations=20, ep=1):
+    def inference(self, x, y, gt_labels=None, num_iterations=20, ep=0):
 
         if self.training:
             self.model.eval()
@@ -581,10 +584,10 @@ def random_hyper_parameter_search(dataset, dir_path, mean_mask, use_cuda, n_sear
         gt_sampling = not adversarial_sampling
 
         if optim_inf == 'adam':
-            ls_inf_lr = [1e-3, 1e-2, 1e-1, 1, 2, 5, 10, 10, 25, 50, 100]
+            ls_inf_lr = [1, 2, 5, 10, 10, 25, 50, 100, 250, 500]
             momentum_inf = 0
         else:
-            ls_inf_lr = [1e-2, 1e-1, 1, 5, 10, 25, 50, 100, 250, 500, 1000]
+            ls_inf_lr = [5, 10, 25, 50, 100, 250, 500, 1000]
             momentum_inf = np.random.rand()
 
         run_the_model(dataset, dir_path, mean_mask, use_cuda, save_model, batch_size=random.choice(ls_batch_size),
