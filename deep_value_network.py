@@ -267,6 +267,7 @@ class DeepValueNetwork:
                 y = y + optim_inf.update(y_grad)
                 # Project back to the valid range
                 y = torch.clamp(y, 0, 1)
+                print('i=',i, 'pred_f1 =', torch.sigmoid())
 
         if self.training:
             self.model.train()
@@ -301,9 +302,11 @@ class DeepValueNetwork:
             self.optimizer.step()
 
             if batch_idx % 10 == 0:
-                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; Avg_Loss = {:.5f}'
+                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; Avg_Loss = {:.5f}; '
+                      'Pred_F1 = {:.2f}%; Real_F1 = {:.2f}%'
                       ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
-                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size),
+                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size,
+                                100 * torch.sigmoid(output).mean(), 100 * oracle.mean()),
                       end='')
 
         t_loss /= t_size
@@ -317,7 +320,7 @@ class DeepValueNetwork:
         self.training = False
 
         loss, t_size = 0, 0
-        mean_f1 = []
+        mean_f1, mean_output = [], []
 
         with torch.no_grad():
             for (inputs, targets) in loader:
@@ -332,17 +335,15 @@ class DeepValueNetwork:
                 loss += self.loss_fn(oracle, output)
 
                 mean_f1.append(oracle.mean())
+                mean_output.append(torch.sigmoid(output).mean())
 
-        mean_f1 = torch.stack(mean_f1)
-        mean_f1 = torch.mean(mean_f1)
+        mean_f1, mean_output = torch.stack(mean_f1), torch.stack(mean_output)
+        mean_f1, mean_output = torch.mean(mean_f1), torch.mean(mean_output)
         loss /= t_size
 
-        if test_set:
-            print('Test set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-                  ''.format(loss.item(), 100 * mean_f1))
-        else:
-            print('Validation set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-                  ''.format(loss.item(), 100 * mean_f1))
+        str_first = 'Test set' if test_set else 'Validation set'
+        print('{}: Avg_Loss = {:.2f}; Pred_F1 = {:.2f}%; Real_F1 = {:.2f}%'
+              ''.format(str_first, loss.item(), 100 * mean_output, 100 * mean_f1))
 
         return loss.item(), mean_f1
 
