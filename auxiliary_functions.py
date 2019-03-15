@@ -136,30 +136,44 @@ def compute_f1_score(labels, outputs):
     return np.mean(f1)
 
 
-def plot_results(results):
+def plot_results(results, iou):
     """
     Parameters:
     ----------
     results: dictionary with the train/valid loss
-    and the f1 scores
+    and the f1 scores]
+    iou: bool
+      if true: print IOU, else print F1 Score
     """
+    str_score = 'IOU' if iou else 'F1 Score'
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
     ax1.set_title('Validation Loss')
     ax1.set_ylabel('loss')
     ax1.set_xlabel('epochs')
-    ax2.set_title('Validation F1 Score')
-    ax2.set_ylabel('F1 Score')
+    ax2.set_title('Validation ' + str_score)
+    ax2.set_ylabel(str_score)
     ax2.set_xlabel('epochs')
 
     ax1.plot(results['loss_train'], label='loss_train')
     ax1.plot(results['loss_valid'], label='loss_valid')
-    ax2.plot(results['f1_valid'])
+    if iou:
+        ax2.plot(results['IOU_valid'])
+    else:
+        ax2.plot(results['f1_valid'])
 
     ax1.legend()
     plt.show()
 
 
-def plot_aggregate_results(results_path, add_title=''):
+def plot_aggregate_results(results_path, iou, add_title=''):
+    """
+       Parameters:
+       ----------
+       iou: bool
+         if true: print IOU, else print F1 Score
+       """
+
+    str_score = 'IOU' if iou else 'F1 Score'
 
     array_results = []
     for filename in os.listdir(results_path):
@@ -171,8 +185,8 @@ def plot_aggregate_results(results_path, add_title=''):
     ax1.set_title('Validation Loss ' + add_title)
     ax1.set_ylabel('loss')
     ax1.set_xlabel('epochs')
-    ax2.set_title('Validation F1 Score ' + add_title)
-    ax2.set_ylabel('F1 Score')
+    ax2.set_title('Validation ' + str_score + ' ' + add_title)
+    ax2.set_ylabel(str_score)
     ax2.set_xlabel('epochs')
 
     # max number of epochs
@@ -188,7 +202,11 @@ def plot_aggregate_results(results_path, add_title=''):
         # ax1.plot(res['loss_train'][:max_ep], label=label)
         if res['name'] != 'SPEN':
             ax1.plot(res['loss_valid'][:max_ep], label=label)
-        ax2.plot(res['f1_valid'][:max_ep], label=label)
+
+        if iou:
+            ax2.plot(res['IOU_valid'][:max_ep], label=label)
+        else:
+            ax2.plot(res['f1_valid'][:max_ep], label=label)
 
     ax1.legend()
     ax2.legend()
@@ -198,8 +216,8 @@ def plot_aggregate_results(results_path, add_title=''):
 if __name__ == "__main__":
 
     # Path where the results in .pkl are stored
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    dir_path += '/saved_results/bibtex/'
+    directory_path = os.path.dirname(os.path.realpath(__file__))
+    directory_path += '/saved_results/bibtex/'
 
     # Plot results from all the .pkl files
-    plot_aggregate_results(dir_path, 'Bibtex')
+    plot_aggregate_results(directory_path, iou=False, add_title='Bibtex')

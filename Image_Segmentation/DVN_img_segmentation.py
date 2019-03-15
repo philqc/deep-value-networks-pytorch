@@ -14,6 +14,7 @@ from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from torchvision import transforms, utils
+import torchvision.transforms.functional as TF
 import pickle
 import pdb
 import torch.optim as optim
@@ -61,6 +62,8 @@ class WeizmannHorseDataset(Dataset):
 
         assert len(self.mask_names) == len(self.img_names)
         self.transform = transform
+        self.normalize = None
+        self.to_tensor = transforms.ToTensor()
         
     def __len__(self):
         return len(self.img_names)
@@ -71,29 +74,57 @@ class WeizmannHorseDataset(Dataset):
         
         image = io.imread(img_name)
         mask = io.imread(mask_name)
-        
+
         if self.transform:
             image = self.transform(image)
+
             # create a channel for mask so as to transform
             mask = self.transform(np.expand_dims(mask, axis=2))
-            
+
+            # Random crop
+            i, j, h, w = transforms.RandomCrop.get_params(image, output_size=(24, 24))
+            image = TF.crop(image, i, j, h, w)
+            mask = TF.crop(mask, i, j, h, w)
+
+            image, mask = self.to_tensor(image), self.to_tensor(mask)
+            image = self.normalize(image)
+
         return image, mask
 
-    def compute_mean_mask(self):
+    def compute_mean_and_stddev(self):
         n_images = len(self.img_names)
-        masks = []
+        masks, images = [], []
+
+        # ToTensor transforms the images/masks in range [0, 1]
+        transform = transforms.Compose([transforms.ToPILImage(),
+                                        transforms.Resize(size=(32, 32)),
+                                        transforms.ToTensor()])
+
         for i in range(n_images):
             mask_name = os.path.join(self.mask_dir, self.mask_names[i])
+            img_name = os.path.join(self.img_dir, self.img_names[i])
             mask = io.imread(mask_name)
+            image = io.imread(img_name)
 
-            if self.transform:
-                # create a channel for mask so as to transform
-                mask = self.transform(np.expand_dims(mask, axis=2))
+            image = transform(image)
+            # create a channel for mask so as to transform
+            mask = transform(np.expand_dims(mask, axis=2))
 
             masks.append(mask)
+            images.append(image)
 
-        # after torch.stack, we should have n_images x 1 x 32 x 32
-        masks = torch.stack(masks)
+        # after torch.stack, we should have n_images x 1 x 32 x 32 for mask
+        # and have n_images x 3 x 32 x 32 for images
+        images, masks = torch.stack(images), torch.stack(masks)
+
+        # compute mean and std_dev of images
+        # put the images in n_images x 3 x (32x32) shape
+        images = images.view(images.size(0), images.size(1), -1)
+        mean_imgs = images.mean(2).sum(0) / n_images
+        std_imgs = images.std(2).sum(0) / n_images
+        ############################################
+
+        # Find mean_mask for visualization purposes
         height, width = masks.shape[2], masks.shape[3]
         # flatten
         masks = masks.view(n_images, 1, -1)
@@ -107,23 +138,24 @@ class WeizmannHorseDataset(Dataset):
             img_to_show = img_to_show.squeeze(0)
             show_img(img_to_show, black_and_white=True)
 
-        return mean_mask
+        return mean_imgs, std_imgs, mean_mask
 
 
 class ConvNet(nn.Module):
 
-    def __init__(self, non_linearity='relu'):
+    def __init__(self, non_linearity='relu', use_batch_norm=False):
         super().__init__()
         # Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
-        self.conv1 = nn.Conv2d(4, 64, 5, 1)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.conv2 = nn.Conv2d(64, 128, 5, 2)
-        self.bn2 = nn.BatchNorm2d(128)
-        self.conv3 = nn.Conv2d(128, 128, 5, 2)
-        self.bn3 = nn.BatchNorm2d(128)
-        # Linear(in_features, out_features, bias=True)
-        self.fc1 = nn.Linear(128 * 4 * 4, 384)
+        self.conv1 = nn.Conv2d(4, 64, 5, 1, padding=2)
+        self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
+        self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
 
+        self.bn1 = nn.BatchNorm2d(64) if use_batch_norm else None
+        self.bn2 = nn.BatchNorm2d(128) if use_batch_norm else None
+        self.bn3 = nn.BatchNorm2d(128) if use_batch_norm else None
+
+        # Linear(in_features, out_features, bias=True)
+        self.fc1 = nn.Linear(128 * 6 * 6, 384)
         self.fc2 = nn.Linear(384, 192)
         self.fc3 = nn.Linear(192, 1)
 
@@ -139,6 +171,7 @@ class ConvNet(nn.Module):
         else:
             raise ValueError('Unknown activation Convnet:', non_linearity)
 
+        self.use_batch_norm = use_batch_norm
         # apply dropout on the first FC layer as paper mentioned
         self.dropout = nn.Dropout(p=0.25)
 
@@ -147,13 +180,18 @@ class ConvNet(nn.Module):
     def forward(self, x, y):
         # We first concatenate the img and the mask
         z = torch.cat((x, y), 1)
-        z = self.non_linearity(self.bn1(self.conv1(z)))
-        z = self.non_linearity(self.bn2(self.conv2(z)))
-        z = self.non_linearity(self.bn3(self.conv3(z)))
-        # don't forget to flatten before connect to FC layers
-        z = z.view(-1, 128 * 4 * 4)
-        z = self.non_linearity(self.fc1(z))
+        if self.use_batch_norm:
+            z = self.non_linearity(self.bn1(self.conv1(z)))
+            z = self.non_linearity(self.bn2(self.conv2(z)))
+            z = self.non_linearity(self.bn3(self.conv3(z)))
+        else:
+            z = self.non_linearity(self.conv1(z))
+            z = self.non_linearity(self.conv2(z))
+            z = self.non_linearity(self.conv3(z))
 
+        # flatten before FC layers
+        z = z.view(-1, 128 * 6 * 6)
+        z = self.non_linearity(self.fc1(z))
         z = self.dropout(z)
         z = self.non_linearity(self.fc2(z))
         z = self.fc3(z)
@@ -162,9 +200,9 @@ class ConvNet(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, dataset, use_cuda, adversarial_sampling=True,
+    def __init__(self, dataset, dir_path, use_cuda, adversarial_sampling=True,
                  gt_sampling=False, stratified_sampling=False, batch_size=16, batch_size_eval=16,
-                 learning_rate=0.01, inf_lr=50, momentum_inf=0, feature_dim=(32, 32), label_dim=(32, 32),
+                 learning_rate=0.01, inf_lr=50, momentum_inf=0, feature_dim=(24, 24), label_dim=(24, 24),
                  non_linearity='relu', n_steps_inf=30, n_steps_inf_adversarial=1, lr_decay_inf_iteration=1,
                  lr_decay_inf_epoch=1, optimizer_inf='sgd'):
         """
@@ -222,7 +260,7 @@ class DeepValueNetwork:
                 os.makedirs(directory)
 
         # Deep Value Network is just a ConvNet
-        self.model = ConvNet(non_linearity).to(self.device)
+        self.model = ConvNet(non_linearity, use_batch_norm=True).to(self.device)
 
         self.loss_fn = nn.BCEWithLogitsLoss()
 
@@ -232,11 +270,11 @@ class DeepValueNetwork:
         self.batch_size = batch_size
         self.batch_size_eval = batch_size_eval
 
-        self.n_train = int(len(WhorseDataset) * 0.80)
-        self.n_valid = len(WhorseDataset) - self.n_train
+        self.n_train = int(len(dataset) * 0.80)
+        self.n_valid = len(dataset) - self.n_train
 
         print('Using a {} train {} validation split'.format(self.n_train, self.n_valid))
-        indices = list(range(len(WhorseDataset)))
+        indices = list(range(len(dataset)))
         random.shuffle(indices)
 
         self.train_loader = DataLoader(
@@ -450,7 +488,7 @@ class DeepValueNetwork:
                 oracle = self.get_oracle_value(pred_labels, targets)
                 output = self.model(inputs, pred_labels)
 
-                loss += self.loss_fn(oracle, output)
+                loss += self.loss_fn(output, oracle)
                 mean_iou.append(oracle.mean())
 
         mean_iou = torch.stack(mean_iou)
@@ -505,7 +543,7 @@ def run_the_model(dataset, dir_path, use_cuda, save_model, early_stopping, batch
                   lr_decay_inf_epoch=1, n_steps_inf=20, n_steps_inf_adversarial=1,
                   step_size_scheduler_main=30, gamma_scheduler_main=0.1, non_linearity='relu'):
 
-    DVN = DeepValueNetwork(dataset, use_cuda,
+    DVN = DeepValueNetwork(dataset, dir_path, use_cuda,
                            adversarial_sampling=adversarial_sampling, gt_sampling=gt_sampling,
                            stratified_sampling=stratified_sampling, optimizer_inf=optimizer_inf,
                            batch_size=batch_size, batch_size_eval=batch_size_eval, inf_lr=inf_lr,
@@ -616,28 +654,35 @@ def random_hyper_parameter_search(dataset, dir_path, use_cuda, n_search,
                       )
 
 
-if __name__ == "__main__":
-    
+def start():
+
     dir_path = os.path.dirname(os.path.realpath(__file__))
 
     # Use GPU if it is available
     use_cuda = torch.cuda.is_available()
-    
+
     image_dir = dir_path + '/images'
     mask_dir = dir_path + '/masks'
 
     # Use Dataset to resize and convert to Tensor
-    WhorseDataset = WeizmannHorseDataset(image_dir, mask_dir, test_set=False,
-                                         transform=transforms.Compose([
-                                               transforms.ToPILImage(),
-                                               transforms.Resize(size=(32, 32)),
-                                               transforms.ToTensor()]))
+    WhorseDataset = WeizmannHorseDataset(image_dir, mask_dir, test_set=False)
 
-    # mean_mask = WhorseDataset.compute_mean_mask()
+    mean_imgs, std_imgs, mean_mask = WhorseDataset.compute_mean_and_stddev()
+    print('mean_imgs =', mean_imgs, 'std_dev_imgs =', std_imgs)
+
+    WhorseDataset.transform = transforms.Compose([transforms.ToPILImage(),
+                                                  transforms.Resize(size=(32, 32))])
+
+    WhorseDataset.normalize = transforms.Normalize(mean_imgs, std_imgs)
 
     # Launch hyperparameter search
-    random_hyper_parameter_search(WhorseDataset, dir_path, use_cuda, n_search=100,
+    random_hyper_parameter_search(WhorseDataset, dir_path, use_cuda, n_search=1,
                                   save_model=False, early_stopping=False)
 
-    # plot_results(results)
+    # plot_results(results, iou=True)
+
+
+if __name__ == "__main__":
+    start()
+
 

@@ -2,17 +2,34 @@
   <dictionary name="philb">
     <words>
       <w>arff</w>
+      <w>autograd</w>
+      <w>beardsell</w>
       <w>bibtex</w>
       <w>binarize</w>
+      <w>chao</w>
+      <w>chih</w>
+      <w>conv</w>
+      <w>convnet</w>
       <w>cuda</w>
       <w>dataset</w>
+      <w>exponentiated</w>
       <w>gygli</w>
+      <w>hyperparameter</w>
+      <w>hyperparameters</w>
+      <w>imgs</w>
+      <w>imshow</w>
       <w>infnet</w>
+      <w>logits</w>
       <w>optim</w>
       <w>pred</w>
       <w>pytorch</w>
+      <w>relu</w>
+      <w>softplus</w>
       <w>spen</w>
+      <w>tanh</w>
       <w>tensorflow</w>
+      <w>tranpose</w>
+      <w>whorse</w>
     </words>
   </dictionary>
 </component>

@@ -267,7 +267,6 @@ class DeepValueNetwork:
                 y = y + optim_inf.update(y_grad)
                 # Project back to the valid range
                 y = torch.clamp(y, 0, 1)
-                print('i=',i, 'pred_f1 =', torch.sigmoid())
 
         if self.training:
             self.model.train()
@@ -332,7 +331,7 @@ class DeepValueNetwork:
                 oracle = self.get_oracle_value(pred_labels, targets)
                 output = self.model(inputs, pred_labels)
 
-                loss += self.loss_fn(oracle, output)
+                loss += self.loss_fn(output, oracle)
 
                 mean_f1.append(oracle.mean())
                 mean_output.append(torch.sigmoid(output).mean())
@@ -358,14 +357,18 @@ if __name__ == "__main__":
     print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
 
+    add_ground_truth = False
+    add_adversarial = not add_ground_truth
+    str_res = 'Ground_Truth' if add_ground_truth else 'Adversarial'
+
     DVN = DeepValueNetwork(train_inputs, train_labels, use_cuda,
-                           add_adversarial=True, add_ground_truth=False,
+                           add_adversarial=add_adversarial, add_ground_truth=add_ground_truth,
                            batch_size=64, batch_size_eval=64)
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=30, gamma=0.1)
 
-    results = {'name': 'DVN_Inference_and_Ground_Truth', 'loss_train': [],
+    results = {'name': 'DVN_Inference_and_' + str_res, 'loss_train': [],
                'loss_valid': [], 'f1_valid': []}
 
     save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
@@ -381,7 +384,7 @@ if __name__ == "__main__":
         with open(save_results_file, 'wb') as fout:
             pickle.dump(results, fout)
 
-    plot_results(results)
+    plot_results(results, iou=False)
     torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
 
     do_test_set = True
