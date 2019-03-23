@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from __future__ import print_function, division
 import os
 import threading
@@ -140,6 +141,9 @@ class WeizmannHorseDataset(Dataset):
         return mean_imgs, std_imgs, mean_mask
 
 
+
+
+
 class ConvNet(nn.Module):
 
     def __init__(self, non_linearity='relu', use_batch_norm=False):
@@ -197,6 +201,202 @@ class ConvNet(nn.Module):
         return z
 
 
+class FCNBaseLine(nn.Module):
+
+    def __init__(self, non_linearity='relu', use_batch_norm=False):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 5, 1, padding=2)
+        self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
+        self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
+
+        # Taken from https://openreview.net/forum?id=By40DoAqtX
+        self.deconv1 = nn.ConvTranspose2d(128, 1, kernel_size=4, stride=2, padding=4)
+        self.deconv2 = nn.ConvTranspose2d(1, 1, kernel_size=8, stride=4, padding=2)
+
+        self.bn1 = nn.BatchNorm2d(64) if use_batch_norm else None
+        self.bn2 = nn.BatchNorm2d(128) if use_batch_norm else None
+        self.bn3 = nn.BatchNorm2d(128) if use_batch_norm else None
+        self.bn4 = nn.BatchNorm2d(1) if use_batch_norm else None
+
+        non_linearity = non_linearity.lower()
+        if non_linearity == 'softplus':
+            self.non_linearity = nn.Softplus()
+        elif non_linearity == 'relu':
+            self.non_linearity = nn.ReLU()
+        elif non_linearity == 'elu':
+            self.non_linearity = nn.ELU()
+        elif non_linearity == 'tanh':
+            self.non_linearity = nn.Tanh()
+        else:
+            raise ValueError('Unknown activation Convnet:', non_linearity)
+
+        self.use_batch_norm = use_batch_norm
+
+    def forward(self, z):
+        print('(0) z.shape=', z.shape)
+        if self.use_batch_norm:
+            z = self.non_linearity(self.bn1(self.conv1(z)))
+            print('(1) z.shape=', z.shape)
+            z = self.non_linearity(self.bn2(self.conv2(z)))
+            print('(2) z.shape=', z.shape)
+            z = self.non_linearity(self.bn3(self.conv3(z)))
+            print('(3) z.shape=', z.shape)
+            z = self.non_linearity(self.bn4(self.deconv1(z)))
+            print('(4) z.shape=', z.shape)
+        else:
+            z = self.non_linearity(self.conv1(z))
+            z = self.non_linearity(self.conv2(z))
+            z = self.non_linearity(self.conv3(z))
+            z = self.non_linearity(self.deconv1(z))
+
+        z = self.deconv2(z)
+        print('(5) z.shape=', z.shape)
+        return z
+
+
+class FullyConvNet:
+    def __init__(self, dataset, dir_path, use_cuda, batch_size=16, batch_size_eval=16,
+                 non_linearity='relu', learning_rate=0.01, feature_dim=(24, 24), label_dim=(24, 24)):
+
+        self.device = torch.device("cuda" if use_cuda else "cpu")
+        self.feature_dim = feature_dim
+        self.label_dim = label_dim
+
+        # Using standard FCN
+        self.model = FCNBaseLine(non_linearity, use_batch_norm=True).to(self.device)
+
+        # Binary Cross entropy loss
+        # Computes independent loss for each label in the vector
+        # Our final loss is the sum over all our losses
+        self.loss_fn = nn.BCEWithLogitsLoss(reduction='sum')
+
+        # Hyperparameters from LDRSP paper
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        self.batch_size = batch_size
+        self.batch_size_eval = batch_size_eval
+
+        self.n_train = int(len(dataset) * 0.80)
+        self.n_valid = len(dataset) - self.n_train
+
+        print('Using a {} train {} validation split'.format(self.n_train, self.n_valid))
+        indices = list(range(len(dataset)))
+        random.shuffle(indices)
+
+        self.train_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            sampler=SubsetRandomSampler(indices[:self.n_train]),
+            pin_memory=use_cuda
+        )
+
+        self.valid_loader = DataLoader(
+            dataset,
+            batch_size=batch_size_eval,
+            sampler=SubsetRandomSampler(indices[self.n_train:]),
+            pin_memory=use_cuda
+        )
+
+        # turn on/off
+        self.training = False
+
+    def get_oracle_value(self, pred_labels, gt_labels):
+        """
+        Compute the ground truth value, i.e. v*(y, y*)
+        of some predicted labels, where v*(y, y*)
+        is the relaxed version of the IOU (intersection
+        over union) when training, and the discrete IOU
+        when validating/testing
+        """
+        if pred_labels.shape != gt_labels.shape:
+            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
+
+        if not self.training:
+            # No relaxation, 0-1 only
+            pred_labels = torch.where(pred_labels >= 0.5,
+                                      torch.ones(1).to(self.device),
+                                      torch.zeros(1).to(self.device))
+            pred_labels = pred_labels.float()
+
+        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
+        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
+
+        intersect = torch.min(pred_labels, gt_labels)
+        union = torch.max(pred_labels, gt_labels)
+
+        # for numerical stability
+        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
+
+        f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
+        # we want a (Batch_size x 1) tensor
+        #iou = iou.view(-1, 1)
+        #pdb.set_trace()
+        return f1
+
+    def train(self, ep):
+
+        self.model.train()
+        self.training = True
+
+        time_start = time.time()
+        t_loss, t_size = 0, 0
+
+        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+
+            inputs, targets = inputs.to(self.device), targets.to(self.device)
+            inputs, targets = inputs.float(), targets.float()
+
+            t_size += len(inputs)
+
+            self.model.zero_grad()
+
+            output = self.model(inputs)
+            #oracle = self.get_oracle_value(torch.sigmoid(output), targets)
+
+            loss = self.loss_fn(output, targets)
+            t_loss += loss.item()
+
+            loss.backward()
+            self.optimizer.step()
+
+            if batch_idx % 2 == 0:
+                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
+                      'Avg_Loss = {:.5f}'
+                      ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
+                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size),
+                      end='')
+
+        t_loss /= t_size
+        self.training = False
+        print('')
+        return t_loss
+
+    def valid(self, loader, test_set=False, ep=0):
+
+        self.model.eval()
+        self.training = False
+
+        loss, t_size = 0, 0
+        with torch.no_grad():
+            for (inputs, targets) in loader:
+                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                inputs, targets = inputs.float(), targets.float()
+                t_size += len(inputs)
+
+                output = self.model(inputs)
+                #oracle = self.get_oracle_value(torch.sigmoid(output), targets)
+
+                loss += self.loss_fn(output, targets)
+
+        loss /= t_size
+
+        str_first = 'Test set' if test_set else 'Validation set'
+        print('{}: Loss = {:.5f}'
+              ''.format(str_first, loss.item()))
+
+        return loss.item()
+
+
 class DeepValueNetwork:
 
     def __init__(self, dataset, dir_path, use_cuda, adversarial_sampling=True,
@@ -242,7 +442,7 @@ class DeepValueNetwork:
         self.n_steps_inf = n_steps_inf
         self.lr_decay_inf_epoch = lr_decay_inf_epoch
         self.lr_decay_inf_iteration = lr_decay_inf_iteration
-        self.optimizer_inf = optimizer_inf
+        self.optimizer_inf = optimizer_inf.lower()
         self.inf_lr = inf_lr
         self.momentum_inf = momentum_inf
         ################################
@@ -374,9 +574,9 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
-        if self.optimizer_inf.lower() == 'sgd':
+        if self.optimizer_inf == 'sgd':
             optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
-        elif self.optimizer_inf.lower() == 'adam':
+        elif self.optimizer_inf == 'adam':
             optim_inf = Adam(y, lr=self.inf_lr)
         else:
             raise ValueError('Error: Unknown optimizer for inference:', self.optimizer_inf)
@@ -392,8 +592,8 @@ class DeepValueNetwork:
                 optim_inf.lr /= self.lr_decay_inf_iteration
 
                 if gt_labels is not None:  # Adversarial
-                    oracle = self.get_oracle_value(y, gt_labels)
                     output = self.model(x, y)
+                    oracle = self.get_oracle_value(y, gt_labels)
                     # this is the BCE loss with logits
                     value = self.loss_fn(output, oracle)
                 else:
@@ -404,14 +604,12 @@ class DeepValueNetwork:
                                            only_inputs=True)
 
                 y_grad = grad[0].detach()
-                y_new = y + optim_inf.update(y_grad)
+                y = y + optim_inf.update(y_grad)
                 # Project back to the valid range
-                y_new = torch.clamp(y_new, 0, 1)
-                #pdb.set_trace()
-                y = y_new
+                y = torch.clamp(y, 0, 1)
                 # visualize all the inference process while training
                 if i == num_iterations - 1:
-                    img = y_new.detach().cpu()
+                    img = y.detach().cpu()
                     if self.training:
                         if gt_labels is not None:
                             directory = self.dir_train_adversarial_img + str(self.filename_train_other)
@@ -428,6 +626,7 @@ class DeepValueNetwork:
             self.model.train()
 
         return y
+
 
     def train(self, ep):
 
@@ -447,8 +646,8 @@ class DeepValueNetwork:
             self.model.zero_grad()
 
             pred_labels = self.generate_output(inputs, targets, ep)
-            oracle = self.get_oracle_value(pred_labels, targets)
             output = self.model(inputs, pred_labels)
+            oracle = self.get_oracle_value(pred_labels, targets)
 
             loss = self.loss_fn(output, oracle)
             t_loss += loss.item()
@@ -484,8 +683,8 @@ class DeepValueNetwork:
                 t_size += len(inputs)
 
                 pred_labels = self.generate_output(inputs, targets, ep)
-                oracle = self.get_oracle_value(pred_labels, targets)
                 output = self.model(inputs, pred_labels)
+                oracle = self.get_oracle_value(pred_labels, targets)
 
                 loss += self.loss_fn(output, oracle)
                 mean_iou.append(oracle.mean())
@@ -558,6 +757,7 @@ def run_the_model(dataset, dir_path, use_cuda, save_model, early_stopping, batch
                'loss_valid': [], 'IOU_valid': [], 'batch_size': batch_size,
                'batch_size_eval': batch_size_eval, 'optimizer_inf': optimizer_inf,
                'non_linearity_convnet': non_linearity,
+               'n_parameters': count_parameters(DVN.model),
                'adversarial_sampling': adversarial_sampling, 'gt_sampling': gt_sampling,
                'stratified_sampling': stratified_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf,
                'lr_decay_inf_iteration': lr_decay_inf_iteration, 'lr_decay_inf_epoch': lr_decay_inf_epoch,
@@ -653,6 +853,38 @@ def random_hyper_parameter_search(dataset, dir_path, use_cuda, n_search,
                       )
 
 
+def run_fcn_model(dataset, dir_path, use_cuda, batch_size, batch_size_eval):
+
+    FCN = FullyConvNet(dataset, dir_path, use_cuda, batch_size, batch_size_eval)
+
+    results = {'name': 'DVN_Whorse', 'loss_train': [],
+               'loss_valid': [], 'IOU_valid': [], 'batch_size': batch_size,
+               'batch_size_eval': batch_size_eval}
+
+    results_path = dir_path + '/results/'
+    if not os.path.isdir(results_path):
+        os.makedirs(results_path)
+
+    # Increment a counter so that previous results with the same args will not
+    # be overwritten. Comment out the next four lines if you only want to keep
+    # the most recent results.
+    i = 0
+    while os.path.exists(results_path + str(i) + '.pkl'):
+        i += 1
+    results_path = results_path + str(i)
+
+    for epoch in range(300):
+        loss_train = FCN.train(epoch)
+        loss_valid = FCN.valid(FCN.valid_loader, ep=epoch)
+        results['loss_train'].append(loss_train)
+        results['loss_valid'].append(loss_valid)
+        #results['IOU_valid'].append(iou_valid)
+
+        with open(results_path + '.pkl', 'wb') as fout:
+            pickle.dump(results, fout)
+
+
+
 def start():
 
     dir_path = os.path.dirname(os.path.realpath(__file__))
@@ -675,8 +907,13 @@ def start():
     WhorseDataset.normalize = transforms.Normalize(mean_imgs, std_imgs)
 
     # Launch hyperparameter search
-    random_hyper_parameter_search(WhorseDataset, dir_path, use_cuda, n_search=1,
-                                  save_model=False, early_stopping=False)
+    #random_hyper_parameter_search(WhorseDataset, dir_path, use_cuda, n_search=1,
+    #                              save_model=False, early_stopping=False)
+
+
+    # Fully convnet model
+    run_fcn_model(WhorseDataset, dir_path, use_cuda,
+                  batch_size=2, batch_size_eval=2)
 
     # plot_results(results, iou=True)
 

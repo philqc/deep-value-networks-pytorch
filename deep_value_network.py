@@ -244,7 +244,7 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
-        optim_inf = SGD(y, lr=0.5, momentum=0)
+        optim_inf = SGD(y, lr=5, momentum=0)
         #optim_inf = Adam(y, lr=0.5)
 
         with torch.enable_grad():
@@ -252,8 +252,8 @@ class DeepValueNetwork:
             for i in range(num_iterations):
 
                 if gt_labels is not None:  # Adversarial
-                    oracle = self.get_oracle_value(y, gt_labels)
                     output = self.model(x, y)
+                    oracle = self.get_oracle_value(y, gt_labels)
                     # this is the BCE loss with logits
                     value = self.loss_fn(output, oracle)
                 else:
@@ -291,9 +291,8 @@ class DeepValueNetwork:
             self.model.zero_grad()
 
             pred_labels = self.generate_output(inputs, targets)
-            oracle = self.get_oracle_value(pred_labels, targets)
             output = self.model(inputs, pred_labels)
-
+            oracle = self.get_oracle_value(pred_labels, targets)
             loss = self.loss_fn(output, oracle)
             t_loss += loss.item()
 
@@ -328,9 +327,8 @@ class DeepValueNetwork:
                 t_size += len(inputs)
 
                 pred_labels = self.generate_output(inputs, targets)
-                oracle = self.get_oracle_value(pred_labels, targets)
                 output = self.model(inputs, pred_labels)
-
+                oracle = self.get_oracle_value(pred_labels, targets)
                 loss += self.loss_fn(output, oracle)
 
                 mean_f1.append(oracle.mean())

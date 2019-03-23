@@ -80,6 +80,10 @@ class MyDataset(Dataset):
         return len(self.inputs)
 
 
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters())
+
+
 def show_img(img, black_and_white=True):
     np_img = img.numpy()
     # put channel at the end for plt.imshow
@@ -107,6 +111,11 @@ def save_img(img, path_to_save, black_and_white=True):
 def save_grid_imgs(input_imgs, path_to_save, black_and_white=True):
     img = utils.make_grid(input_imgs, nrow=8)
     save_img(img, path_to_save, black_and_white)
+
+
+def show_grid_imgs(input_imgs, black_and_white=True):
+    img = utils.make_grid(input_imgs, nrow=8)
+    show_img(img, black_and_white)
 
 
 def print_a_sentence(x, y, txt_inputs, txt_labels):
