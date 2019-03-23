@@ -1,2 +1,3 @@
-Image_Segmentation/
+Image_Segmentation/pred/
+Image_Segmentation/results/
 .idea/workspace.xml
