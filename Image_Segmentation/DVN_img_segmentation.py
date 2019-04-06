@@ -1,69 +1,59 @@
 # -*- coding: utf-8 -*-
+"""
+Created on Fri Apr  5 18:40:19 2019
+
+@author: Gabriel Hsu
+"""
+
 from __future__ import print_function, division
+
 import os
-import threading
-from queue import Queue, Empty
+import argparse
 import time
+import random
+
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
+
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
+from torchsummary import summary
 from torch.autograd import Variable
+from torchvision import transforms, utils
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-from torchvision import transforms, utils
-import torchvision.transforms.functional as TF
-import pickle
-import pdb
-import torch.optim as optim
-from scipy.misc import imsave, imresize
-#from torchsummary import summary
+
+
 from auxiliary_functions import *
-import random
 #Ignore warnings
-import warnings
+import warnings 
 warnings.filterwarnings("ignore")
 
 __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
-
-# build the dataset, generate the "training tuple"
+#%%Dataset
 class WeizmannHorseDataset(Dataset):
-    """ Weizmann Horse Dataset """
+    """Weizmann Horse Dataset"""
     
-    def __init__(self, img_dir, mask_dir, test_set, transform=None):
+    def __init__(self, img_dir, mask_dir, transform = None):
         """
         Args:
             img_dir(string): Path to the image file (training image)
             mask_dir(string): Path to the mask file (segmentation result)
-            test_set(bool): if we want test set or train set
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
         self.img_dir = img_dir
         self.mask_dir = mask_dir
 
-        all_img_names = os.listdir(img_dir)
-        all_mask_names = os.listdir(mask_dir)
+        self.img_names = os.listdir(img_dir)
+        self.mask_names = os.listdir(mask_dir)
 
-        self.img_names = []
-        self.mask_names = []
-        for i, name in enumerate(all_img_names):
-            img_number = ''.join([n for n in name if n.isdigit()])
-            if int(img_number) >= 200:
-                if test_set:
-                    self.img_names.append(name)
-                    self.mask_names.append(all_mask_names[i])
-            else:
-                self.img_names.append(name)
-                self.mask_names.append(all_mask_names[i])
-
-        assert len(self.mask_names) == len(self.img_names)
         self.transform = transform
-        self.normalize = None
-        self.to_tensor = transforms.ToTensor()
         
     def __len__(self):
         return len(self.img_names)
@@ -74,851 +64,386 @@ class WeizmannHorseDataset(Dataset):
         
         image = io.imread(img_name)
         mask = io.imread(mask_name)
-
+        
         if self.transform:
+                      
             image = self.transform(image)
-
+            
             # create a channel for mask so as to transform
             mask = self.transform(np.expand_dims(mask, axis=2))
-
-            # Random crop
-            i, j, h, w = transforms.RandomCrop.get_params(image, output_size=(24, 24))
-            image = TF.crop(image, i, j, h, w)
-            mask = TF.crop(mask, i, j, h, w)
-
-            image, mask = self.to_tensor(image), self.to_tensor(mask)
-            image = self.normalize(image)
-
-        return image, mask
-
-    def compute_mean_and_stddev(self):
-        n_images = len(self.img_names)
-        masks, images = [], []
-
-        # ToTensor transforms the images/masks in range [0, 1]
-        transform = transforms.Compose([transforms.ToPILImage(),
-                                        transforms.Resize(size=(32, 32)),
-                                        transforms.ToTensor()])
-
-        for i in range(n_images):
-            mask_name = os.path.join(self.mask_dir, self.mask_names[i])
-            img_name = os.path.join(self.img_dir, self.img_names[i])
-            mask = io.imread(mask_name)
-            image = io.imread(img_name)
-
-            image = transform(image)
-            # create a channel for mask so as to transform
-            mask = transform(np.expand_dims(mask, axis=2))
-
-            masks.append(mask)
-            images.append(image)
-
-        # after torch.stack, we should have n_images x 1 x 32 x 32 for mask
-        # and have n_images x 3 x 32 x 32 for images
-        images, masks = torch.stack(images), torch.stack(masks)
-
-        # compute mean and std_dev of images
-        # put the images in n_images x 3 x (32x32) shape
-        images = images.view(images.size(0), images.size(1), -1)
-        mean_imgs = images.mean(2).sum(0) / n_images
-        std_imgs = images.std(2).sum(0) / n_images
-        ############################################
-
-        # Find mean_mask for visualization purposes
-        height, width = masks.shape[2], masks.shape[3]
-        # flatten
-        masks = masks.view(n_images, 1, -1)
-        mean_mask = torch.mean(masks, dim=0)
-        # go back to 32 x 32 view
-        mean_mask = mean_mask.view(1, 1, height, width)
-
-        print_mask = False
-        if print_mask:
-            img_to_show = mean_mask.squeeze(0)
-            img_to_show = img_to_show.squeeze(0)
-            show_img(img_to_show, black_and_white=True)
-
-        return mean_imgs, std_imgs, mean_mask
-
-
-
-
-
-class ConvNet(nn.Module):
-
-    def __init__(self, non_linearity='relu', use_batch_norm=False):
-        super().__init__()
-        # Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
-        self.conv1 = nn.Conv2d(4, 64, 5, 1, padding=2)
-        self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
-        self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
-
-        self.bn1 = nn.BatchNorm2d(64) if use_batch_norm else None
-        self.bn2 = nn.BatchNorm2d(128) if use_batch_norm else None
-        self.bn3 = nn.BatchNorm2d(128) if use_batch_norm else None
-
-        # Linear(in_features, out_features, bias=True)
-        self.fc1 = nn.Linear(128 * 6 * 6, 384)
-        self.fc2 = nn.Linear(384, 192)
-        self.fc3 = nn.Linear(192, 1)
-
-        non_linearity = non_linearity.lower()
-        if non_linearity == 'softplus':
-            self.non_linearity = nn.Softplus()
-        elif non_linearity == 'relu':
-            self.non_linearity = nn.ReLU()
-        elif non_linearity == 'elu':
-            self.non_linearity = nn.ELU()
-        elif non_linearity == 'tanh':
-            self.non_linearity = nn.Tanh()
-        else:
-            raise ValueError('Unknown activation Convnet:', non_linearity)
-
-        self.use_batch_norm = use_batch_norm
-        # apply dropout on the first FC layer as paper mentioned
-        self.dropout = nn.Dropout(p=0.25)
-
-        # define how input will be processed through those layers
-
-    def forward(self, x, y):
-        # We first concatenate the img and the mask
-        z = torch.cat((x, y), 1)
-        if self.use_batch_norm:
-            z = self.non_linearity(self.bn1(self.conv1(z)))
-            z = self.non_linearity(self.bn2(self.conv2(z)))
-            z = self.non_linearity(self.bn3(self.conv3(z)))
-        else:
-            z = self.non_linearity(self.conv1(z))
-            z = self.non_linearity(self.conv2(z))
-            z = self.non_linearity(self.conv3(z))
-
-        # flatten before FC layers
-        z = z.view(-1, 128 * 6 * 6)
-        z = self.non_linearity(self.fc1(z))
-        z = self.dropout(z)
-        z = self.non_linearity(self.fc2(z))
-        z = self.fc3(z)
-        return z
-
-
-class FCNBaseLine(nn.Module):
-
-    def __init__(self, non_linearity='relu', use_batch_norm=False):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 64, 5, 1, padding=2)
-        self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
-        self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
-
-        # Taken from https://openreview.net/forum?id=By40DoAqtX
-        self.deconv1 = nn.ConvTranspose2d(128, 1, kernel_size=4, stride=2, padding=4)
-        self.deconv2 = nn.ConvTranspose2d(1, 1, kernel_size=8, stride=4, padding=2)
-
-        self.bn1 = nn.BatchNorm2d(64) if use_batch_norm else None
-        self.bn2 = nn.BatchNorm2d(128) if use_batch_norm else None
-        self.bn3 = nn.BatchNorm2d(128) if use_batch_norm else None
-        self.bn4 = nn.BatchNorm2d(1) if use_batch_norm else None
-
-        non_linearity = non_linearity.lower()
-        if non_linearity == 'softplus':
-            self.non_linearity = nn.Softplus()
-        elif non_linearity == 'relu':
-            self.non_linearity = nn.ReLU()
-        elif non_linearity == 'elu':
-            self.non_linearity = nn.ELU()
-        elif non_linearity == 'tanh':
-            self.non_linearity = nn.Tanh()
-        else:
-            raise ValueError('Unknown activation Convnet:', non_linearity)
-
-        self.use_batch_norm = use_batch_norm
-
-    def forward(self, z):
-        print('(0) z.shape=', z.shape)
-        if self.use_batch_norm:
-            z = self.non_linearity(self.bn1(self.conv1(z)))
-            print('(1) z.shape=', z.shape)
-            z = self.non_linearity(self.bn2(self.conv2(z)))
-            print('(2) z.shape=', z.shape)
-            z = self.non_linearity(self.bn3(self.conv3(z)))
-            print('(3) z.shape=', z.shape)
-            z = self.non_linearity(self.bn4(self.deconv1(z)))
-            print('(4) z.shape=', z.shape)
-        else:
-            z = self.non_linearity(self.conv1(z))
-            z = self.non_linearity(self.conv2(z))
-            z = self.non_linearity(self.conv3(z))
-            z = self.non_linearity(self.deconv1(z))
-
-        z = self.deconv2(z)
-        print('(5) z.shape=', z.shape)
-        return z
-
-
-class FullyConvNet:
-    def __init__(self, dataset, dir_path, use_cuda, batch_size=16, batch_size_eval=16,
-                 non_linearity='relu', learning_rate=0.01, feature_dim=(24, 24), label_dim=(24, 24)):
-
-        self.device = torch.device("cuda" if use_cuda else "cpu")
-        self.feature_dim = feature_dim
-        self.label_dim = label_dim
-
-        # Using standard FCN
-        self.model = FCNBaseLine(non_linearity, use_batch_norm=True).to(self.device)
-
-        # Binary Cross entropy loss
-        # Computes independent loss for each label in the vector
-        # Our final loss is the sum over all our losses
-        self.loss_fn = nn.BCEWithLogitsLoss(reduction='sum')
-
-        # Hyperparameters from LDRSP paper
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-
-        self.batch_size = batch_size
-        self.batch_size_eval = batch_size_eval
-
-        self.n_train = int(len(dataset) * 0.80)
-        self.n_valid = len(dataset) - self.n_train
-
-        print('Using a {} train {} validation split'.format(self.n_train, self.n_valid))
-        indices = list(range(len(dataset)))
-        random.shuffle(indices)
-
-        self.train_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            sampler=SubsetRandomSampler(indices[:self.n_train]),
-            pin_memory=use_cuda
-        )
-
-        self.valid_loader = DataLoader(
-            dataset,
-            batch_size=batch_size_eval,
-            sampler=SubsetRandomSampler(indices[self.n_train:]),
-            pin_memory=use_cuda
-        )
-
-        # turn on/off
-        self.training = False
-
-    def get_oracle_value(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the IOU (intersection
-        over union) when training, and the discrete IOU
-        when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
-        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
-
-        intersect = torch.min(pred_labels, gt_labels)
-        union = torch.max(pred_labels, gt_labels)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
-        # we want a (Batch_size x 1) tensor
-        #iou = iou.view(-1, 1)
-        #pdb.set_trace()
-        return f1
-
-    def train(self, ep):
-
-        self.model.train()
-        self.training = True
-
-        time_start = time.time()
-        t_loss, t_size = 0, 0
-
-        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
-
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            inputs, targets = inputs.float(), targets.float()
-
-            t_size += len(inputs)
-
-            self.model.zero_grad()
-
-            output = self.model(inputs)
-            #oracle = self.get_oracle_value(torch.sigmoid(output), targets)
-
-            loss = self.loss_fn(output, targets)
-            t_loss += loss.item()
-
-            loss.backward()
-            self.optimizer.step()
-
-            if batch_idx % 2 == 0:
-                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
-                      'Avg_Loss = {:.5f}'
-                      ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
-                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size),
-                      end='')
-
-        t_loss /= t_size
-        self.training = False
-        print('')
-        return t_loss
-
-    def valid(self, loader, test_set=False, ep=0):
-
-        self.model.eval()
-        self.training = False
-
-        loss, t_size = 0, 0
-        with torch.no_grad():
-            for (inputs, targets) in loader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                inputs, targets = inputs.float(), targets.float()
-                t_size += len(inputs)
-
-                output = self.model(inputs)
-                #oracle = self.get_oracle_value(torch.sigmoid(output), targets)
-
-                loss += self.loss_fn(output, targets)
-
-        loss /= t_size
-
-        str_first = 'Test set' if test_set else 'Validation set'
-        print('{}: Loss = {:.5f}'
-              ''.format(str_first, loss.item()))
-
-        return loss.item()
-
-
-class DeepValueNetwork:
-
-    def __init__(self, dataset, dir_path, use_cuda, adversarial_sampling=True,
-                 gt_sampling=False, stratified_sampling=False, batch_size=16, batch_size_eval=16,
-                 learning_rate=0.01, inf_lr=50, momentum_inf=0, feature_dim=(24, 24), label_dim=(24, 24),
-                 non_linearity='relu', n_steps_inf=30, n_steps_inf_adversarial=1, lr_decay_inf_iteration=1,
-                 lr_decay_inf_epoch=1, optimizer_inf='sgd'):
-        """
-        Parameters
-        ----------
-        use_cuda: boolean
-            true if we are using gpu, false if using cpu
-        learning_rate : float
-            learning rate for updating the value network parameters
-            default: 0.01 in DVN paper
-        inf_lr : float
-            learning rate for the inference procedure
-        adversarial_sampling: bool
-            Generate adversarial tuples while training.
-            (Usually outperforms stratified sampling and adding ground truth)
-        stratified_sampling: bool (Not yet implemented)
-            Sample y proportional to its exponential oracle value.
-            Sample from the exponentiated value distribution using stratified sampling.
-        gt_sampling: bool
-            Simply add the ground truth outputs y* with some probably p while training.
-        """
-
-        self.device = torch.device("cuda" if use_cuda else "cpu")
-
-        self.adversarial_sampling = adversarial_sampling
-        self.gt_sampling = gt_sampling
-        self.stratified_sampling = stratified_sampling
-        if self.stratified_sampling:
-            raise ValueError('Stratified sampling is not yet implemented!')
-        if self.gt_sampling and self.adversarial_sampling:
-            raise ValueError('Adversarial examples and Adding Ground Truth are both set to true !')
-
-        self.feature_dim = feature_dim
-        self.label_dim = label_dim
-
-        # Inference hyperparameters
-        self.n_steps_inf_adversarial = n_steps_inf_adversarial
-        self.n_steps_inf = n_steps_inf
-        self.lr_decay_inf_epoch = lr_decay_inf_epoch
-        self.lr_decay_inf_iteration = lr_decay_inf_iteration
-        self.optimizer_inf = optimizer_inf.lower()
-        self.inf_lr = inf_lr
-        self.momentum_inf = momentum_inf
-        ################################
-
-        # for visualization purpose in "inference" function
-        self.filename_train_other, self.filename_train_inf, self.filename_valid = 0, 0, 0
-        # if directory doesn't exist, create it
-        dir_predict_imgs = dir_path + '/pred/'
-        self.dir_train_inf_img = dir_predict_imgs + '/train_inference/'
-        self.dir_train_adversarial_img = dir_predict_imgs + '/train_adversarial/'
-        self.dir_valid_img = dir_predict_imgs + '/valid/'
-        for directory in [self.dir_train_inf_img, self.dir_train_adversarial_img, self.dir_valid_img]:
-            if not os.path.isdir(directory):
-                os.makedirs(directory)
-
-        # Deep Value Network is just a ConvNet
-        self.model = ConvNet(non_linearity, use_batch_norm=True).to(self.device)
-
-        self.loss_fn = nn.BCEWithLogitsLoss()
-
-        # Paper use SGD for convnet with learning rate = 0.01
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate)
-
-        self.batch_size = batch_size
-        self.batch_size_eval = batch_size_eval
-
-        self.n_train = int(len(dataset) * 0.80)
-        self.n_valid = len(dataset) - self.n_train
-
-        print('Using a {} train {} validation split'.format(self.n_train, self.n_valid))
-        indices = list(range(len(dataset)))
-        random.shuffle(indices)
-
-        self.train_loader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            sampler=SubsetRandomSampler(indices[:self.n_train]),
-            pin_memory=use_cuda
-        )
-
-        self.valid_loader = DataLoader(
-            dataset,
-            batch_size=batch_size_eval,
-            sampler=SubsetRandomSampler(indices[self.n_train:]),
-            pin_memory=use_cuda
-        )
-
-        # turn on/off
-        self.training = False
-
-    def get_oracle_value(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the IOU (intersection
-        over union) when training, and the discrete IOU
-        when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
-        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        iou = intersect / torch.max(epsilon, union)
-        # we want a (Batch_size x 1) tensor
-        iou = iou.view(-1, 1)
-        #pdb.set_trace()
-        return iou
-
-    def get_ini_labels(self, x, gt_labels=None):
-        """
-        Get the tensor of predicted labels
-        that we will do inference on
-        """
-        y = torch.zeros(x.size()[0], 1, self.label_dim[0], self.label_dim[1],
-                        dtype=torch.float32, device=self.device)
-
-        if gt_labels is not None:
-            # 50% of initialization labels: Start from GT; rest: start from zeros
-            gt_indices = torch.rand(gt_labels.shape[0]).float().to(self.device) > 0.5
-            y[gt_indices] = gt_labels[gt_indices]
-
-        # Set requires_grad=True after in_place operation (changing the indices)
-        y.requires_grad = True
-        return y
-
-    def generate_output(self, x, gt_labels, ep=0):
-        """
-        Generate an output y to compute
-        the loss v(y, y*) --> we can use different
-        techniques to generate the output
-        1) Gradient based inference
-        2) Simply add the ground truth outputs
-        2) Generating adversarial tuples
-        3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
-        """
-
-        if self.adversarial_sampling and self.training and np.random.rand() >= 0.5:
-            # In training: Generate adversarial examples 50% of the time
-            init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
-            pred_labels = self.inference(x, init_labels, self.n_steps_inf_adversarial,
-                                         gt_labels=gt_labels, ep=ep)
-        elif self.gt_sampling and self.training and np.random.rand() >= 0.5:
-            # In training: If add_ground_truth=True, add ground truth outputs
-            # to provide some positive examples to the network
-            pred_labels = gt_labels
-        else:
-            init_labels = self.get_ini_labels(x)
-            pred_labels = self.inference(x, init_labels, self.n_steps_inf, ep=ep)
-
-        return pred_labels
-
-    def inference(self, x, y, num_iterations, gt_labels=None, ep=0):
-
-        if self.training:
-            self.model.eval()
-
-        if self.optimizer_inf == 'sgd':
-            optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
-        elif self.optimizer_inf == 'adam':
-            optim_inf = Adam(y, lr=self.inf_lr)
-        else:
-            raise ValueError('Error: Unknown optimizer for inference:', self.optimizer_inf)
-
-        # For hyperparameter search, check if we should reduce learning rate every epoch
-        # as gradients become more significant
-        optim_inf.lr /= (self.lr_decay_inf_epoch ** ep)
-
-        with torch.enable_grad():
-
-            for i in range(num_iterations):
-
-                optim_inf.lr /= self.lr_decay_inf_iteration
-
-                if gt_labels is not None:  # Adversarial
-                    output = self.model(x, y)
-                    oracle = self.get_oracle_value(y, gt_labels)
-                    # this is the BCE loss with logits
-                    value = self.loss_fn(output, oracle)
-                else:
-                    output = self.model(x, y)
-                    value = torch.sigmoid(output)
-
-                grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value),
-                                           only_inputs=True)
-
-                y_grad = grad[0].detach()
-                y = y + optim_inf.update(y_grad)
-                # Project back to the valid range
-                y = torch.clamp(y, 0, 1)
-                # visualize all the inference process while training
-                if i == num_iterations - 1:
-                    img = y.detach().cpu()
-                    if self.training:
-                        if gt_labels is not None:
-                            directory = self.dir_train_adversarial_img + str(self.filename_train_other)
-                            self.filename_train_other += 1
-                        else:
-                            directory = self.dir_train_inf_img + str(self.filename_train_inf)
-                            self.filename_train_inf += 1
-                    else:
-                        directory = self.dir_valid_img + str(self.filename_valid)
-                        self.filename_valid += 1
-                    save_grid_imgs(img, directory)
-
-        if self.training:
-            self.model.train()
-
-        return y
-
-
-    def train(self, ep):
-
-        self.model.train()
-        self.training = True
-
-        time_start = time.time()
-        t_loss, t_size = 0, 0
-
-        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
-
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            inputs, targets = inputs.float(), targets.float()
-
-            t_size += len(inputs)
-
-            self.model.zero_grad()
-
-            pred_labels = self.generate_output(inputs, targets, ep)
-            output = self.model(inputs, pred_labels)
-            oracle = self.get_oracle_value(pred_labels, targets)
-
-            loss = self.loss_fn(output, oracle)
-            t_loss += loss.item()
-
-            loss.backward()
-            self.optimizer.step()
-
-            if batch_idx % 2 == 0:
-                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
-                      'Avg_Loss = {:.5f}; Pred_IOU = {:.2f}%; Real_IOU = {:.2f}%'
-                      ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
-                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size,
-                                100 * torch.sigmoid(output).mean(), 100 * oracle.mean()),
-                      end='')
-
-        t_loss /= t_size
-        self.training = False
-        print('')
-        return t_loss
-
-    def valid(self, loader, test_set=False, ep=0):
-
-        self.model.eval()
-        self.training = False
-
-        loss, t_size = 0, 0
-        mean_iou = []
-
-        with torch.no_grad():
-            for (inputs, targets) in loader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                inputs, targets = inputs.float(), targets.float()
-                t_size += len(inputs)
-
-                pred_labels = self.generate_output(inputs, targets, ep)
-                output = self.model(inputs, pred_labels)
-                oracle = self.get_oracle_value(pred_labels, targets)
-
-                loss += self.loss_fn(output, oracle)
-                mean_iou.append(oracle.mean())
-
-        mean_iou = torch.stack(mean_iou)
-        mean_iou = torch.mean(mean_iou)
-        mean_iou = mean_iou.cpu().numpy()
-        # loss /= t_size
-
-        str_first = 'Test set' if test_set else 'Validation set'
-        print('{}: Loss = {:.5f}; Pred_IOU = {:.2f}%, Real_IOU = {:.2f}%'
-              ''.format(str_first, loss.item(), 100 * torch.sigmoid(output).mean(), 100 * mean_iou))
-
-        return loss.item(), mean_iou
-
-
-# create synchronized queue to accumulate the sample:
-def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads = 5):
-    # need to reconsider the maxsize
-    tuple_queue = Queue()
-    indices_queue = Queue()
-    for idx in np.arange(0, train_imgs.shape[0], batch_size):
-        indices_queue.put(idx)
-
-    # parallel work here
-    def generate():
-        try:
-            while True:
-                # get a batch
-                idx = indices_queue.get_nowait()
-#                print(idx)
-                imgs = train_imgs[idx: min(train_imgs.shape[0], idx + batch_size)]
-                masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
-
-                # generate data (training tuples)
-                # pred_masks, f1_scores = generate_examples(model, imgs, masks, train=True)
-                # tuple_queue.put((imgs, pred_masks, f1_scores))
+            
+#            #Random crop
+#            i, j, h, w = transforms.RandomCrop.get_params(image, output_size=(24, 24))
+#            image = TF.crop(image, i, j, h, w)                
+#            mask = TF.crop(mask, i, j, h, w)
                 
-        except Empty:
-            # put empty object as a end signal
-            print("empty detect")
-
-    for _ in range(num_threads):
-        thread = threading.Thread(target = generate)
-        thread.start()
-        thread.join()
+#            # Random Horizontal flipping
+#            if random.random() > 0.5:
+#                image = TF.hflip(image)
+#                mask = TF.hflip(mask)
+                
+            #In DVN mask should be continuous
+            image = TF.to_tensor(image)      
+            mask = TF.to_tensor(mask)
+        
+        return image, mask
     
-    return tuple_queue
+#%%Evaluation Metrics
+def IOU_batch(y_pred, y_true):
+    batch_size = y_pred.shape[0]
+    
+    scores = torch.zeros(batch_size, 1)
+    for i in range(batch_size):
+        scores[i] = IOU(y_pred[i], y_true[i])
+    
+    return scores
+
+#y_pred and y_true are all "torch tensor"
+def IOU(y_pred, y_true):
+    
+    y_pred = torch.flatten(y_pred).reshape(1,-1)
+    y_true = torch.flatten(y_true).reshape(1,-1)
+
+    y_concat = torch.cat([y_pred, y_true], 0)
+
+    intersect = torch.sum(torch.min(y_concat, 0)[0]).float()
+    union = torch.sum(torch.max(y_concat, 0)[0]).float()
+    return (intersect / max(10 ** -8, union))
+
+#%%Model 
+def weights_init(model):
+    if isinstance(model, nn.Conv2d):
+        torch.nn.init.xavier_uniform(model.weight.data)
+        
+class DVN(nn.Module):
+     
+    #define each layer of neural network
+    def __init__(self):
+         super(DVN, self). __init__()
+         #Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+         self.conv1 = nn.Conv2d(4, 64, 5, 1)
+         self.bn1 = nn.BatchNorm2d(64)
+         self.conv2 = nn.Conv2d(64, 128, 5, 2)
+         self.bn2 = nn.BatchNorm2d(128)
+         self.conv3 = nn.Conv2d(128, 128, 5, 2)
+         self.bn3 = nn.BatchNorm2d(128)
+         
+         #Linear(in_features, out_features, bias=True)
+         self.fc1 = nn.Linear(128*4*4, 1024)
+         self.fc2 = nn.Linear(1024, 512)
+         self.fc3 = nn.Linear(512, 256)
+         self.fc4 = nn.Linear(256, 128)
+         self.fc5 = nn.Linear(128, 1)
+         
+    #define how input will be processed through those layers
+    def forward(self, imgs, masks):
+         x = torch.cat((imgs, masks), 1)
+         x = F.relu(self.bn1(self.conv1(x)))
+         x = F.relu(self.bn2(self.conv2(x)))
+         x = F.relu(self.bn3(self.conv3(x)))
+         #Dont forget to flatten before connect to FC layers
+         x = x.view(-1, 128*4*4)
+         x = F.relu(self.fc1(x))
+         #Apply dropout on the first FC layer as paper mentioned
+         x = F.dropout(x, p=0.25)
+         x = F.relu(self.fc2(x))
+         x = F.dropout(x, p=0.25)
+         x = F.relu(self.fc3(x))
+         x = F.dropout(x, p=0.25)
+         x = F.relu(self.fc4(x))
+         x = F.relu(self.fc5(x))
+
+#         x = F.sigmoid(x)
+         return x
+     
+        
+#%% Inference 
+def generate_train_tuple(model, imgs, masks, isTrain=True):
+    """generate training tuple"""
+  
+    #zero mask for inference
+#    init_masks = torch.zeros_like(masks)
+    init_masks = torch.randn(masks.shape[0], masks.shape[1], masks.shape[2], masks.shape[3]).to(device)
+    k = np.random.uniform()
+    
+    if isTrain and k >= 0.6:
+#        print("Input GT Label")
+        iteration = random.randint(0, 30)
+        inf_masks = inference(model, imgs, init_masks, num_iterations=iteration, isTrain=isTrain)
+    
+    elif isTrain:
+        iteration = random.randint(0, 30)
+        inf_masks = inference(model, imgs, init_masks, masks, num_iterations=iteration, isTrain=isTrain)
+    
+    else:
+#        print("Input inference Label")
+        iteration = 30
+        inf_masks = inference(model, imgs, init_masks, num_iterations=iteration, isTrain=isTrain)
+        
+    
+    iou = IOU_batch(inf_masks, masks)
+    
+    return inf_masks, iou
+        
+        
+def inference(model, imgs, init_masks, gt_labels=None, lr=20, num_iterations=30, isTrain=True):
+    """Run the inference"""
+    
+    #Don't update parameters when doing inference
+    if not isTrain:
+        model.eval()
+        
+    inf_masks = init_masks.requires_grad_()
+    
+    #enhance loss or IOU is a regression problem, not classification
+    loss_fn = nn.MSELoss()
+    
+    optim_inf = Adam(inf_masks, lr= 5)
+    
+    with torch.enable_grad():
+        for idx in range(0, num_iterations):              
+            inf_IOU = model(imgs, inf_masks)
+            
+            if gt_labels is not None:
+                #make adversarial sample
+                true_IOU = IOU_batch(inf_masks, gt_labels).to(device)
+                value = loss_fn(inf_IOU, true_IOU)
+            else:
+                #make inference sample
+                value = inf_IOU
+                
+            if idx==0 or idx==19:
+                #monitor if gradient ascent works 
+                print("iteration={} \t value={}".format(idx+1, torch.mean(value)))
+            
+            #calculate the gradient for gradient ascend
+            grad = torch.autograd.grad(value, inf_masks, grad_outputs=torch.ones_like(value),
+                                           only_inputs=True)
+            
+            grad = grad[0].detach()
+            inf_masks = inf_masks + optim_inf.update(grad)
+            inf_masks = torch.clamp(inf_masks, 0, 1)
+    
+#    inf_masks = inf_masks.detach()
+#    inf_masks[inf_masks > 0.5] = 1
+#    inf_masks[inf_masks < 1] = 0
+            
+    return inf_masks
+    
+#%%Training and Validation
+def train(args, model, device, train_loader, optimizer, epochs) :
+    
+    model.train()
+    train_loss = 0
+    
+    #DVN network is a regression problem
+    loss_fn = nn.MSELoss()
+    
+    #define the operation batch-wise
+    for batch_idx, (imgs, masks) in enumerate(train_loader):
+        #send the data into GPU or CPU
+        imgs, masks = imgs.to(device), masks.to(device)
+        
+        #generate training tuple
+        inf_masks, iou = generate_train_tuple(model, imgs, masks, isTrain=True)
+        inf_masks, iou = inf_masks.to(device), iou.to(device)
+        
+        #clear the gradient in the optimizer in the begining of each backpropagation
+        optimizer.zero_grad()
+        #get out
+        pred_IOU = model(imgs,inf_masks)
+       
+        loss  = loss_fn(pred_IOU, iou)
+        #do backprobagation to get gradient
+        loss.backward()
+        
+        #update the parameters
+        optimizer.step()
+        
+        #train loss
+        train_loss+=loss.item()
+    
+    return train_loss/len(train_loader)
+    
+def test(args, model, device, test_loader, epochs):
+    
+    model.eval()
+    test_loss = 0
+    total_iou = 0
+    
+    #DVN network is a regression problem
+    loss_fn = nn.MSELoss()
+    
+    with torch.no_grad():
+        for imgs, masks in test_loader:            
+            imgs, masks = imgs.to(device), masks.to(device)
+            
+            #generate training tuple
+            inf_masks, iou = generate_train_tuple(model, imgs, masks, isTrain=False)
+            inf_masks, iou = inf_masks.to(device), iou.to(device)
+
+            #clear the gradient in the optimizer in the begining of each backpropagation
+            optimizer.zero_grad()
+        
+            pred_IOU = model(imgs,inf_masks)
+            loss  = loss_fn(pred_IOU, iou)
+            
+            #calculate IOU of inference
+            init_masks = torch.randn(masks.shape[0], masks.shape[1], masks.shape[2], masks.shape[3]).to(device)
+            pred_masks = inference(model, imgs, init_masks, num_iterations=30, isTrain=False)
+            total_iou+= torch.mean(IOU_batch(pred_masks, masks))
+            
+            
+            #visualize the inference image
+            pred_masks = pred_masks.detach().cpu()
+            directory = "./inference/epoch" + str(epochs)
+            save_grid_imgs(pred_masks, directory)
+            
+            
+            #Average the loss (batch_wise)
+            test_loss += loss.item()
+
+    return test_loss/len(test_loader), total_iou/len(test_loader)
 
 
-def run_the_model(dataset, dir_path, use_cuda, save_model, early_stopping, batch_size, batch_size_eval,
-                  adversarial_sampling=False, gt_sampling=False, stratified_sampling=False,
-                  optimizer_inf='adam', inf_lr=5, momentum_inf=np.nan, lr_decay_inf_iteration=1,
-                  lr_decay_inf_epoch=1, n_steps_inf=20, n_steps_inf_adversarial=1,
-                  step_size_scheduler_main=30, gamma_scheduler_main=0.1, non_linearity='relu'):
 
-    DVN = DeepValueNetwork(dataset, dir_path, use_cuda,
-                           adversarial_sampling=adversarial_sampling, gt_sampling=gt_sampling,
-                           stratified_sampling=stratified_sampling, optimizer_inf=optimizer_inf,
-                           batch_size=batch_size, batch_size_eval=batch_size_eval, inf_lr=inf_lr,
-                           momentum_inf=momentum_inf, lr_decay_inf_iteration=lr_decay_inf_iteration,
-                           lr_decay_inf_epoch=lr_decay_inf_epoch, n_steps_inf=n_steps_inf,
-                           n_steps_inf_adversarial=n_steps_inf_adversarial, non_linearity=non_linearity)
-
-    # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=step_size_scheduler_main,
-                                                gamma=gamma_scheduler_main)
-
-    results = {'name': 'DVN_Whorse', 'loss_train': [],
-               'loss_valid': [], 'IOU_valid': [], 'batch_size': batch_size,
-               'batch_size_eval': batch_size_eval, 'optimizer_inf': optimizer_inf,
-               'non_linearity_convnet': non_linearity,
-               'n_parameters': count_parameters(DVN.model),
-               'adversarial_sampling': adversarial_sampling, 'gt_sampling': gt_sampling,
-               'stratified_sampling': stratified_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf,
-               'lr_decay_inf_iteration': lr_decay_inf_iteration, 'lr_decay_inf_epoch': lr_decay_inf_epoch,
-               'momentum_inf': momentum_inf, 'step_size_scheduler_main': step_size_scheduler_main,
-               'gamma_scheduler_main': gamma_scheduler_main, 'n_steps_inf_adversarial': n_steps_inf_adversarial}
-
-    results_path = dir_path + '/results/'
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
-
-    # Increment a counter so that previous results with the same args will not
-    # be overwritten. Comment out the next four lines if you only want to keep
-    # the most recent results.
-    i = 0
-    while os.path.exists(results_path + str(i) + '.pkl'):
-        i += 1
-    results_path = results_path + str(i)
-
-    stop_after_x = 25
-
-    for epoch in range(300):
-        loss_train = DVN.train(epoch)
-        loss_valid, iou_valid = DVN.valid(DVN.valid_loader, ep=epoch)
-        scheduler.step()
-        results['loss_train'].append(loss_train)
-        results['loss_valid'].append(loss_valid)
-        results['IOU_valid'].append(iou_valid)
-
-        with open(results_path + '.pkl', 'wb') as fout:
-            pickle.dump(results, fout)
-
-        # Early stopping #
-        if early_stopping:
-            if epoch > stop_after_x \
-                    and np.mean(results['loss_valid'][-10:]) > np.mean(results['loss_valid'][-stop_after_x:]) - 1e-3 \
-                    and loss_valid > np.mean(results['loss_valid'][-stop_after_x:]) - 1e-3 \
-                    and np.mean(results['IOU_valid'][-5:]) < 0.005 + np.mean(results['IOU_valid'][-stop_after_x:]):
-                print(
-                    'Loss has not improved since %s iterations; mean_last_loss = %.5f; mean_last_10 = %.5f; new = %.5f'
-                    % (stop_after_x, np.mean(results['loss_valid'][-stop_after_x:]),
-                       np.mean(results['loss_valid'][-10:]), loss_valid))
-                print('--> We stop')
-                break
-            elif epoch > 5 and np.isclose(np.mean(results['IOU_valid'][:5]), iou_valid, atol=1e-6).any():
-                print('Inference step is not working, Valid IOU stays the same across epochs\n --> We stop')
-                break
-
-    if save_model:
-        torch.save(DVN.model.state_dict(), results_path + '.pth')
-
-
-def random_hyper_parameter_search(dataset, dir_path, use_cuda, n_search,
-                                  save_model, early_stopping):
-
-    ls_batch_size = [8, 16, 32]
-    batch_size_eval = 40
-
-    ls_step_size_scheduler_main = [20, 30, 40, 50, 75, 100, 150, 200, 300]
-    ls_gamma_scheduler_main = [0.1, 0.25, 0.5, 0.75, 1]
-
-    ls_n_steps_inf = [30, 30, 35, 40, 50, 75, 100]
-    ls_n_steps_inf_adversarial = [1, 1, 1, 2, 3, 5, 10]
-    ls_lr_decay_inf_iteration = [1, 1, 1.05, 1.1, 1.15, 1.25, 1.5, 2]
-    ls_lr_decay_inf_epoch = [1, 1, 1, 1.1, 1.15, 1.2]
-
-    ls_optim_inf = ['adam', 'sgd']
-    optim_inf = random.choice(ls_optim_inf)
-
-    for i in range(n_search):
-        print('\n----------------------------------------------')
-        print(i, ' iteration of random search \n')
-        adversarial_sampling = True if np.random.rand() > 0.5 else False
-        gt_sampling = not adversarial_sampling
-
-        if optim_inf == 'adam':
-            ls_inf_lr = [1, 5, 10, 25, 50, 100, 250, 500]
-            momentum_inf = 0
-        else:
-            ls_inf_lr = [5, 10, 25, 50, 100, 250, 500, 1000]
-            momentum_inf = np.random.rand()
-
-        run_the_model(dataset, dir_path, use_cuda, save_model, early_stopping,
-                      batch_size=random.choice(ls_batch_size),
-                      batch_size_eval=batch_size_eval, adversarial_sampling=adversarial_sampling,
-                      gt_sampling=gt_sampling, optimizer_inf=optim_inf, inf_lr=random.choice(ls_inf_lr),
-                      momentum_inf=momentum_inf,
-                      lr_decay_inf_iteration=random.choice(ls_lr_decay_inf_iteration),
-                      lr_decay_inf_epoch=random.choice(ls_lr_decay_inf_epoch),
-                      n_steps_inf=random.choice(ls_n_steps_inf),
-                      n_steps_inf_adversarial=random.choice(ls_n_steps_inf_adversarial),
-                      step_size_scheduler_main=random.choice(ls_step_size_scheduler_main),
-                      gamma_scheduler_main=random.choice(ls_gamma_scheduler_main)
-                      )
-
-
-def run_fcn_model(dataset, dir_path, use_cuda, batch_size, batch_size_eval):
-
-    FCN = FullyConvNet(dataset, dir_path, use_cuda, batch_size, batch_size_eval)
-
-    results = {'name': 'DVN_Whorse', 'loss_train': [],
-               'loss_valid': [], 'IOU_valid': [], 'batch_size': batch_size,
-               'batch_size_eval': batch_size_eval}
-
-    results_path = dir_path + '/results/'
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
-
-    # Increment a counter so that previous results with the same args will not
-    # be overwritten. Comment out the next four lines if you only want to keep
-    # the most recent results.
-    i = 0
-    while os.path.exists(results_path + str(i) + '.pkl'):
-        i += 1
-    results_path = results_path + str(i)
-
-    for epoch in range(300):
-        loss_train = FCN.train(epoch)
-        loss_valid = FCN.valid(FCN.valid_loader, ep=epoch)
-        results['loss_train'].append(loss_train)
-        results['loss_valid'].append(loss_valid)
-        #results['IOU_valid'].append(iou_valid)
-
-        with open(results_path + '.pkl', 'wb') as fout:
-            pickle.dump(results, fout)
-
-
-
-def start():
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-
-    # Use GPU if it is available
-    use_cuda = torch.cuda.is_available()
-
-    image_dir = dir_path + '/images'
-    mask_dir = dir_path + '/masks'
-
-    # Use Dataset to resize and convert to Tensor
-    WhorseDataset = WeizmannHorseDataset(image_dir, mask_dir, test_set=False)
-
-    mean_imgs, std_imgs, mean_mask = WhorseDataset.compute_mean_and_stddev()
-    print('mean_imgs =', mean_imgs, 'std_dev_imgs =', std_imgs)
-
-    WhorseDataset.transform = transforms.Compose([transforms.ToPILImage(),
-                                                  transforms.Resize(size=(32, 32))])
-
-    WhorseDataset.normalize = transforms.Normalize(mean_imgs, std_imgs)
-
-    # Launch hyperparameter search
-    #random_hyper_parameter_search(WhorseDataset, dir_path, use_cuda, n_search=1,
-    #                              save_model=False, early_stopping=False)
-
-
-    # Fully convnet model
-    run_fcn_model(WhorseDataset, dir_path, use_cuda,
-                  batch_size=2, batch_size_eval=2)
-
-    # plot_results(results, iou=True)
-
-
+#%%Main Function
 if __name__ == "__main__":
-    start()
+    
+    #Version of Pytorch
+    print("Pytorch Version:", torch.__version__)
+    
 
+    #Training args
+    parser = argparse.ArgumentParser(description='Fully Convolutional Network')
+    parser.add_argument('--batch-size', type=int, default=32, metavar='N',
+                        help='input batch size for training (default: 64)')
+    parser.add_argument('--test-batch-size', type=int, default=32, metavar='N',
+                        help='input batch size for testing (default: 1000)')
+    parser.add_argument('--epochs', type=int, default=200, metavar='N',
+                        help='number of epochs to train (default: 10)')
+    parser.add_argument('--lr', type=float, default=1e-4, metavar='LR',
+                        help='learning rate (default: 0.01)')
+    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
+                        help='SGD momentum (default: 0.5)')
+    parser.add_argument('--no-cuda', action='store_true', default=True,
+                        help='disables CUDA training')
+    parser.add_argument('--seed', type=int, default=1, metavar='S',
+                        help='random seed (default: 1)')
+    parser.add_argument('--log-interval', type=int, default=1000, metavar='N',
+                        help='how many batches to wait before logging training status')
+    
+    parser.add_argument('--save-model', action='store_true', default=True,
+                        help='For Saving the current Model')
+    args = parser.parse_args()
+    
+    #Use GPU if it is available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    #root directory of dataset
+    image_dir = './images'
+    mask_dir = './masks'
+    
+    
+    #Create FCN
+    model = DVN().to(device)
+    #print the model summery
+    print(model)
+    
+    
+    #Visualize the output of each layer via torchSummary
+    summary(model, input_size = [(3,32,32),(1,32,32)] )
+    
+#%%Dataloaders
+        #Use Dataset to resize ,convert to Tensor, and data augmentation
+    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform = 
+                                         transforms.Compose([
+                                               transforms.ToPILImage(),
+                                               transforms.Resize(size=(32,32))                                         
+                                           ]))
+    
+    batch_size = args.batch_size
+    
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))        
+    train_indices, val_indices = indices[0:200], indices[201:-1]
+    
+    # Creating PT data samplers and loaders:
+    train_sampler = SubsetRandomSampler(train_indices)
+    valid_sampler = SubsetRandomSampler(val_indices)
+    
+    train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
+                                           sampler=train_sampler)
+    
+    valid_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
+                                                sampler=valid_sampler)
 
+#%%
+    
+ #optimizer
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+#    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    
+    train_loss = []
+    validation_loss = []
+    inference_iou = []
+    best_inference_iou = 0
+    
+    
+    model.load_state_dict(torch.load('./DVN_Horse_best_para'))
+    
+    start_time = time.time()
+    #Start Training
+    for epoch in range(1, args.epochs+1):
+        #train loss
+        t_loss = train(args, model, device, train_loader, optimizer, epoch)
+        print('Train Epoch: {} \t Loss: {:.6f}\t'.format(
+            epoch, t_loss))
+        
+        #validation loss
+        v_loss, v_inf_iou = test(args, model, device, valid_loader, epoch)
+        print('Validation Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
+            epoch, v_loss, v_inf_iou))
+        
+        scheduler.step()
+        train_loss.append(t_loss)
+        validation_loss.append(v_loss)
+        inference_iou.append(inference_iou)
+        if v_inf_iou > best_inference_iou:
+            best_inference_iou = v_inf_iou
+            torch.save(model.state_dict(), "DVN_Horse_best_{}_para".format(best_inference_iou))
+        
+        print('-------------------------------------------------------')
+        
+    print("--- %s seconds ---" % (time.time() - start_time))
+
+        
+    print("training:", len(train_loader))
+    print("validation:", len(valid_loader))
+    x = list(range(1, args.epochs+1))
+    #plot train/validation loss versus epoch
+    plt.figure()
+    plt.title("Train/Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Total Loss")
+    plt.plot(x, train_loss,label="train loss")
+    plt.plot(x, validation_loss, color='red', label="validation loss")
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show()
+#%%
+    #plot train/validation loss versus epoch
+    plt.figure()
+    plt.title("Train/Validation IOU")
+    plt.xlabel("Epochs")
+    plt.ylabel("Mean IOU")
+    plt.plot(x, inference_iou, color='red', label="validation iou")
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show()
+    
+    
+    #test set
+    print ("Best Inference Mean IOU:", best_inference_iou)
+    model.load_state_dict(torch.load('./DVN_Horse_para'))
