@@ -1,14 +1,11 @@
 from __future__ import print_function, division
-
 import os
 import argparse
 import time
 import random
-
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage import io
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -27,9 +24,9 @@ warnings.filterwarnings("ignore")
 
 
 __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
-#%% data preprocessing 
 
-#build the dataset, generate the "training tuple"
+
+# build the dataset, generate the "training tuple"
 class WeizmannHorseDataset(Dataset):
     """Weizmann Horse Dataset"""
     
@@ -75,8 +72,7 @@ class WeizmannHorseDataset(Dataset):
             if random.random() > 0.5:
                 image = TF.hflip(image)
                 mask = TF.hflip(mask)
-                
-            
+
             image = TF.to_tensor(image)      
             mask = TF.to_tensor(mask)
         
@@ -203,7 +199,7 @@ def train(args, model, device, train_loader, optimizer, epochs) :
     return train_loss/len(train_loader), total_iou/len(train_loader)
 
 #Define Test Method
-def test(args, model, device, test_loader, epochs):
+def testing(args, model, device, test_loader, epochs):
     model.eval()
     test_loss = 0
     total_iou = 0
@@ -248,14 +244,14 @@ def test(args, model, device, test_loader, epochs):
 
     return test_loss/len(test_loader), total_iou/len(test_loader)
 
-#%%
+
 if __name__ == "__main__":
     
-    #Version of Pytorch
+    # Version of Pytorch
     print("Pytorch Version:", torch.__version__)
     
 
-    #Training args
+    # Training args
     parser = argparse.ArgumentParser(description='Fully Convolutional Network')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N',
                         help='input batch size for training (default: 64)')
@@ -278,7 +274,7 @@ if __name__ == "__main__":
                         help='For Saving the current Model')
     args = parser.parse_args()
     
-    #Use GPU if it is available
+    # Use GPU if it is available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     #root directory of dataset
@@ -330,15 +326,15 @@ if __name__ == "__main__":
     best_val_iou = 0
     
     start_time = time.time()
-    #Start Training
+    # Start Training
     for epoch in range(1, args.epochs+1):
         #train loss
         t_loss, t_mean_iou = train(args, model, device, train_loader, optimizer, epoch)
         print('Train Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, t_loss, t_mean_iou))
         
-        #validation loss
-        v_loss, v_mean_iou = test(args, model, device, valid_loader, epoch)
+        # validation loss
+        v_loss, v_mean_iou = testing(args, model, device, valid_loader, epoch)
         print('Validation Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, v_loss, v_mean_iou))
         
@@ -379,12 +375,12 @@ if __name__ == "__main__":
     plt.show()
     
     
-    #test set
-    print ("Best Validation Mean IOU:", best_val_iou)
+    # test set
+    print("Best Validation Mean IOU:", best_val_iou)
    
     
-    #Save the trained model(which means parameters)
-    if(args.save_model):
+    # Save the trained model(which means parameters)
+    if args.save_model:
         torch.save(model.state_dict(), "FCN_Horse")
     
 

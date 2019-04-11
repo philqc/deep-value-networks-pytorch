@@ -20,6 +20,7 @@
       <w>imshow</w>
       <w>infnet</w>
       <w>logits</w>
+      <w>ncrops</w>
       <w>optim</w>
       <w>pred</w>
       <w>pytorch</w>
@@ -28,6 +29,7 @@
       <w>spen</w>
       <w>tanh</w>
       <w>tensorflow</w>
+      <w>thirtysix</w>
       <w>tranpose</w>
       <w>whorse</w>
     </words>
