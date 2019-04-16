@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from Multilabel_classification.load_bibtex import get_bibtex
 from auxiliary_functions import *
+import random
 
 
 class FeatureMLP(nn.Module):
@@ -70,10 +71,9 @@ class FeatureNetwork:
         self.batch_size = 64
         self.batch_size_eval = 64
 
-        self.n_train = int(len(inputs) * 0.90)
-
+        self.n_train = int(len(inputs) * 0.95)
         indices = list(range(len(inputs)))
-        #random.shuffle(indices)
+        # don't shuffle here because we want to use same train/valid split for SPEN
 
         train_data = MyDataset(inputs, labels)
 
@@ -101,7 +101,6 @@ class FeatureNetwork:
 
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             inputs = inputs.float()
-
             t_size += len(inputs)
 
             self.model.zero_grad()
@@ -146,7 +145,8 @@ class FeatureNetwork:
                 output_in_0_1 = output.round().int()
 
                 f1 = compute_f1_score(targets, output_in_0_1)
-                mean_f1.append(f1)
+                for f in f1:
+                    mean_f1.append(f)
 
         mean_f1 = np.mean(mean_f1)
         loss /= t_size
@@ -155,14 +155,14 @@ class FeatureNetwork:
 
         return loss.item(), mean_f1
 
-    def test(self, test_loader, test_labels):
+    def test(self, loader, test_labels):
 
         self.model.eval()
         outputs = []
         loss, t_size = 0, 0
 
         with torch.no_grad():
-            for (inputs, targets) in test_loader:
+            for (inputs, targets) in loader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 inputs = inputs.float()
                 t_size += len(inputs)
@@ -180,10 +180,9 @@ class FeatureNetwork:
         outputs = torch.cat(outputs, out=b)
         test_labels = torch.from_numpy(test_labels)
 
-        f1 = compute_f1_score(test_labels, outputs)
+        f1 = np.mean(compute_f1_score(test_labels, outputs))
 
-        print('Test set : Avg_Loss = {:.2f}; F1 score = {:.2f}%'
-              ''.format(loss, 100 * f1))
+        print('Test set : Avg_Loss = {:.2f}; F1 score = {:.2f}%'.format(loss, 100 * f1))
 
         return loss, f1
 
@@ -197,6 +196,7 @@ if __name__ == "__main__":
 
     print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
+    train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
 
     F_Net = FeatureNetwork(train_inputs, train_labels, use_cuda)
 
@@ -209,7 +209,7 @@ if __name__ == "__main__":
     scheduler = torch.optim.lr_scheduler.StepLR(F_Net.model.optimizer, step_size=25, gamma=0.1)
 
     # Train for 10 epochs as the INFNET paper
-    for epoch in range(1):
+    for epoch in range(10):
         loss_train = F_Net.train(epoch)
         loss_valid, mean_f1 = F_Net.valid()
         scheduler.step()
@@ -223,6 +223,7 @@ if __name__ == "__main__":
     if testing:
         print('Loading Test set...')
         test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
+        test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
         test_data = MyDataset(test_inputs, test_labels)
         test_loader = DataLoader(
             test_data,
@@ -233,6 +234,6 @@ if __name__ == "__main__":
         loss_test, f1_test = F_Net.test(test_loader, test_labels)
 
     # Plot results and save the model
-    plot_results(results)
+    plot_results(results, iou=False)
     torch.save(F_Net.model.state_dict(), dir_path + '/bibtex_feature_network.pth')
 

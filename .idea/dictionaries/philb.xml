@@ -3,6 +3,7 @@
     <words>
       <w>arff</w>
       <w>autograd</w>
+      <w>avgpool</w>
       <w>beardsell</w>
       <w>bibtex</w>
       <w>binarize</w>
@@ -13,6 +14,7 @@
       <w>cuda</w>
       <w>dataset</w>
       <w>exponentiated</w>
+      <w>flickr</w>
       <w>gygli</w>
       <w>hyperparameter</w>
       <w>hyperparameters</w>
@@ -20,17 +22,25 @@
       <w>imshow</w>
       <w>infnet</w>
       <w>logits</w>
+      <w>mirflickr</w>
+      <w>multilabel</w>
       <w>ncrops</w>
       <w>optim</w>
       <w>pred</w>
+      <w>preprocess</w>
+      <w>pretrained</w>
       <w>pytorch</w>
       <w>relu</w>
+      <w>softmax</w>
       <w>softplus</w>
       <w>spen</w>
+      <w>strat</w>
       <w>tanh</w>
       <w>tensorflow</w>
       <w>thirtysix</w>
       <w>tranpose</w>
+      <w>vals</w>
+      <w>veryhard</w>
       <w>whorse</w>
     </words>
   </dictionary>

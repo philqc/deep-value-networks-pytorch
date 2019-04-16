@@ -7,6 +7,13 @@ import os
 import torch
 from torchvision import utils
 import numbers
+from enum import Enum
+
+
+class Sampling(Enum):
+    GT = 1  # ground truth sampling
+    ADV = 2  # adversarial sampling
+    STRAT = 3  # stratified sampling
 
 
 class Adam:
@@ -131,11 +138,29 @@ def print_a_sentence(x, y, txt_inputs, txt_labels):
     for i, y in enumerate(y):
         if y == 1:
             print(txt_labels[i])
-    
+
+
+def normalize_inputs(inputs, dir_path, load):
+    if load:
+        mean = np.load("%s/mean.npz.npy" % dir_path)
+        std = np.load("%s/std.npz.npy" % dir_path)
+    else:
+        mean = np.mean(inputs, axis=0).reshape((1, -1))
+        std = np.std(inputs, axis=0).reshape((1, -1)) + 10 ** -6
+
+    train_inputs = inputs.astype(float)
+    train_inputs -= mean
+    train_inputs /= std
+
+    if not load:
+        np.save("%s/mean.npz" % dir_path, mean)
+        np.save("%s/std.npz" % dir_path, std)
+    return train_inputs
+
 
 def compute_f1_score(labels, outputs):
     """ 
-    Compute the example averaged (macro average) F1 measure
+    Compute the example (total) (macro average) F1 measure
     """
     assert labels.shape == outputs.shape
 
@@ -143,10 +168,28 @@ def compute_f1_score(labels, outputs):
     for i in range(len(outputs)):
         f1.append(f1_score(labels[i], outputs[i]))
 
-    return np.mean(f1)
+    return f1
 
 
-def plot_results(results, iou):
+def calculate_hamming_loss(true_labels, pred_labels):
+    loss = 0.0
+    for true, guess in zip(true_labels, pred_labels):
+        for val1, val2 in zip(true, guess):
+            loss += abs(val1 - val2)
+    return loss
+
+
+def plot_hamming_loss(results):
+    plt.ylabel('loss')
+    plt.xlabel('epochs')
+    plt.title('Hamming loss')
+    plt.plot(results['hamming_loss_valid'], label='hamming_loss_valid')
+    plt.plot(results['hamming_loss_train'], label='hamming_loss_train')
+    plt.legend()
+    plt.show()
+
+
+def plot_results(results, iou=False):
     """
     Parameters:
     ----------
@@ -200,7 +243,7 @@ def plot_aggregate_results(results_path, iou, add_title=''):
     ax2.set_xlabel('epochs')
 
     # max number of epochs
-    max_ep = 60
+    max_ep = 375
 
     for res in array_results:
 

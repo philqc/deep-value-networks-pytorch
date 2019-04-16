@@ -8,10 +8,11 @@ import time
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
+import random
 from Multilabel_classification.feature_network import FeatureMLP
 
 
-class EnergyNetworkMLC(nn.Module):
+class EnergyNetwork(nn.Module):
 
     def __init__(self, weights_last_layer_mlp, feature_dim=150, label_dim=159,
                  num_pairwise=16, non_linearity=nn.Softplus()):
@@ -39,20 +40,17 @@ class EnergyNetworkMLC(nn.Module):
              which will serve to initialize the B matrix
         """
         super().__init__()
-        self.feature_dim = feature_dim
-        self.label_dim = label_dim
-        self.num_pairwise = num_pairwise
 
         self.non_linearity = non_linearity
 
         self.B = torch.nn.Parameter(torch.transpose(-weights_last_layer_mlp, 0, 1))
 
         # Label energy terms, C1/c2  in equation 5 of SPEN paper
-        self.C1 = torch.nn.Parameter(torch.empty(self.label_dim, self.num_pairwise))
-        torch.nn.init.normal_(self.C1, mean=0, std=np.sqrt(2.0 / self.label_dim))
+        self.C1 = torch.nn.Parameter(torch.empty(label_dim, num_pairwise))
+        torch.nn.init.normal_(self.C1, mean=0, std=np.sqrt(2.0 / label_dim))
 
-        self.c2 = torch.nn.Parameter(torch.empty(self.num_pairwise, 1))
-        torch.nn.init.normal_(self.c2, mean=0, std=np.sqrt(2.0 / self.num_pairwise))
+        self.c2 = torch.nn.Parameter(torch.empty(num_pairwise, 1))
+        torch.nn.init.normal_(self.c2, mean=0, std=np.sqrt(2.0 / num_pairwise))
 
     def forward(self, x, y):
 
@@ -72,18 +70,13 @@ class EnergyNetworkMLC(nn.Module):
 
 
 class SPEN:
-    def __init__(self, inputs, targets, use_cuda, batch_size, batch_size_eval,
-                 path_feature_extractor, input_dim=1836, label_dim=159, num_pairwise=16,
+    def __init__(self, use_cuda, path_feature_extractor, input_dim=1836, label_dim=159, num_pairwise=16,
                  learning_rate=0.1, weight_decay=1e-4, non_linearity=nn.Softplus()):
 
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
-        self.num_pairwise = num_pairwise
         self.label_dim = label_dim
         self.training = False
-
-        self.batch_size = batch_size
-        self.batch_size_eval = batch_size_eval
 
         # F(x) model that makes a feature extraction of the inputs
         self.feature_extractor = FeatureMLP(label_dim, input_dim, only_feature_extraction=True)
@@ -92,13 +85,13 @@ class SPEN:
         self.feature_dim = self.feature_extractor.n_hidden_units
 
         # The Energy Network
-        self.model = EnergyNetworkMLC(self.feature_extractor.fc3.weight, self.feature_dim, label_dim,
-                                      num_pairwise, non_linearity).to(self.device)
+        self.model = EnergyNetwork(self.feature_extractor.fc3.weight, input_dim, label_dim,
+                                   num_pairwise, non_linearity).to(self.device)
 
         # Squared loss
         self.loss_fn = nn.MSELoss()
         # Log loss
-        #self.loss_fn = nn.BCEWithLogitsLoss()
+        # self.loss_fn = nn.BCEWithLogitsLoss()
 
         # From SPEN paper, for training we used SGD + momentum
         # with momentum = 0.9, and learning rate + weight decay
@@ -106,36 +99,12 @@ class SPEN:
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
                                          momentum=0.9, weight_decay=weight_decay)
 
-        self.n_train = int(len(inputs) * 0.90)
-        self.n_valid = len(inputs) - self.n_train
-
-        indices = list(range(len(inputs)))
-        #random.shuffle(indices)
-
-        train_data = MyDataset(inputs, targets)
-
-        self.train_loader = DataLoader(
-            train_data,
-            batch_size=self.batch_size,
-            sampler=SubsetRandomSampler(indices[:self.n_train]),
-            pin_memory=use_cuda
-        )
-
-        self.valid_loader = DataLoader(
-            train_data,
-            batch_size=self.batch_size_eval,
-            sampler=SubsetRandomSampler(indices[self.n_train:]),
-            pin_memory=use_cuda
-        )
-
     def get_ini_labels(self, x):
         """
         Get the tensor of predicted labels
         that we will do inference on
         """
-        y = torch.zeros(x.size()[0], self.label_dim,
-                        dtype=torch.float32, device=self.device)
-
+        y = torch.zeros(x.size()[0], self.label_dim, dtype=torch.float32, device=self.device)
         y.requires_grad = True
         return y
 
@@ -173,19 +142,18 @@ class SPEN:
 
         return y_pred
 
-    def train(self, ep):
+    def train(self, loader, ep):
 
         self.model.train()
         self.training = True
-
+        n_train = len(loader.dataset)
         time_start = time.time()
         t_loss, t_size = 0, 0
 
-        for batch_idx, (inputs, targets) in enumerate(self.train_loader):
+        for batch_idx, (inputs, targets) in enumerate(loader):
 
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             inputs, targets = inputs.float(), targets.float()
-
             t_size += len(inputs)
 
             self.model.zero_grad()
@@ -209,8 +177,8 @@ class SPEN:
 
             if batch_idx % 10 == 0:
                 print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; Avg_Loss = {:.5f}'
-                      ''.format(ep, t_size, self.n_train, 100 * t_size / self.n_train,
-                                (self.n_train / t_size) * (time.time() - time_start), t_loss / t_size),
+                      ''.format(ep, t_size, n_train, 100 * t_size / n_train,
+                                (n_train / t_size) * (time.time() - time_start), t_loss / t_size),
                       end='')
 
         t_loss /= t_size
@@ -248,47 +216,83 @@ class SPEN:
                 pred_labels = pred_labels.round().int()
 
                 f1 = compute_f1_score(targets, pred_labels)
-                mean_f1.append(f1)
+                for f in f1:
+                    mean_f1.append(f)
 
         mean_f1 = np.mean(mean_f1)
         loss /= t_size
 
-        if test_set:
-            print('Test set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-                  ''.format(loss.item(), 100 * mean_f1))
-        else:
-            print('Validation set: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-                  ''.format(loss.item(), 100 * mean_f1))
+        str_first = 'Test set' if test_set else 'Validation set'
+        print('{}: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
+              ''.format(str_first, loss.item(), 100 * mean_f1))
 
         return loss.item(), mean_f1
 
 
-if __name__ == "__main__":
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
+def run_test_set(dir_path, path_feature_extractor):
 
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    path_feature_extractor = dir_path + '/bibtex_feature_network.pth'
+    print('Loading Test set...')
+    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
+    test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
+    test_data = MyDataset(test_inputs, test_labels)
+    test_loader = DataLoader(
+        test_data,
+        batch_size=32,
+        pin_memory=use_cuda
+    )
+
+    Spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
+
+    Spen.model.load_state_dict(torch.load('Spen_bibtex.pth'))
+
+    print('Computing the F1 Score on the test set...')
+    loss_test, f1_test = Spen.valid(test_loader, test_set=True)
+
+
+def run_the_model(dir_path, path_feature_extractor):
+
+    # If a GPU is available, use it
+    use_cuda = torch.cuda.is_available()
 
     print('Loading the training set...')
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
+    train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
+    train_data = MyDataset(train_inputs, train_labels)
 
-    Spen = SPEN(train_inputs, train_labels, use_cuda,
-                batch_size=64, batch_size_eval=64,
-                path_feature_extractor=path_feature_extractor)
+    n_train = int(len(train_inputs) * 0.95)
+    indices = list(range(len(train_inputs)))
+    # don't shuffle here because we want to use same train/valid split as feature extractor
+    train_loader = DataLoader(
+        train_data,
+        batch_size=32,
+        sampler=SubsetRandomSampler(indices[:n_train]),
+        pin_memory=use_cuda
+    )
+    valid_loader = DataLoader(
+        train_data,
+        batch_size=32,
+        sampler=SubsetRandomSampler(indices[n_train:]),
+        pin_memory=use_cuda
+    )
+
+    print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
+
+    Spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 
     results = {'name': 'SPEN_bibtex', 'loss_train': [],
                'loss_valid': [], 'f1_valid': []}
 
     save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
 
-    scheduler = torch.optim.lr_scheduler.StepLR(Spen.optimizer, step_size=30, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(Spen.optimizer, step_size=150, gamma=0.1)
 
-    for epoch in range(60):
-        loss_train = Spen.train(epoch)
-        loss_valid, f1_valid = Spen.valid(Spen.valid_loader)
+    best_f1_valid = 0
+    for epoch in range(375):
+        loss_train = Spen.train(train_loader, epoch)
+        loss_valid, f1_valid = Spen.valid(valid_loader)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
@@ -297,22 +301,23 @@ if __name__ == "__main__":
         with open(save_results_file, 'wb') as fout:
             pickle.dump(results, fout)
 
-    plot_results(results)
-    torch.save(Spen.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+        if epoch > 10 and f1_valid > best_f1_valid:
+            best_f1_valid = f1_valid
+            print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_f1_valid))
+            torch.save(Spen.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
 
-    do_test_set = True
-    if do_test_set:
-        # Testing phase
-        print('Loading Test set...')
-        test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
-        test_data = MyDataset(test_inputs, test_labels)
-        test_loader = DataLoader(
-            test_data,
-            batch_size=Spen.batch_size_eval,
-            pin_memory=use_cuda
-        )
-        print('Computing the F1 Score on the test set...')
-        loss_test, f1_test = Spen.valid(test_loader, test_set=True)
+    plot_results(results, False)
+
+
+if __name__ == "__main__":
+
+    dir_path = os.path.dirname(os.path.realpath(__file__))
+    path_feature_extractor = dir_path + '/bibtex_feature_network.pth'
+
+    #run_the_model(dir_path, path_feature_extractor)
+
+    run_test_set(dir_path, path_feature_extractor)
+
 
 
 

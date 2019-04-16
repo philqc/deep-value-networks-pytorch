@@ -209,8 +209,7 @@ class ConvNet(nn.Module):
 
 class DeepValueNetwork:
 
-    def __init__(self, dir_path, use_cuda, adv_sampling=True,
-                 gt_sampling=False, stratified_sampling=False, learning_rate=0.01,
+    def __init__(self, dir_path, use_cuda, mode_sampling=Sampling.GT, learning_rate=0.01,
                  weight_decay=1e-3, shuffle_n_size=False, inf_lr=50, momentum_inf=0,
                  label_dim=(24, 24), n_steps_inf=30, n_steps_adv=1):
         """
@@ -223,25 +222,22 @@ class DeepValueNetwork:
             default: 0.01 in DVN paper
         inf_lr : float
             learning rate for the inference procedure
-        adv_sampling: bool
-            Generate adversarial tuples while training.
-            (Usually outperforms stratified sampling and adding ground truth)
-        stratified_sampling: bool (Not yet implemented)
-            Sample y proportional to its exponential oracle value.
-            Sample from the exponentiated value distribution using stratified sampling.
-        gt_sampling: bool
-            Simply add the ground truth outputs y* with some probably p while training.
+        mode_sampling: int
+            Sampling.ADV:
+                Generate adversarial tuples while training.
+                (Usually outperforms stratified sampling and adding ground truth)
+            Sampling.STRAT: Not yet implemented)
+                Sample y proportional to its exponential oracle value.
+                Sample from the exponentiated value distribution using stratified sampling.
+            Sampling.GT:
+                Simply add the ground truth outputs y* with some probably p while training.
         """
 
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
-        self.adv_sampling = adv_sampling
-        self.gt_sampling = gt_sampling
-        self.stratified_sampling = stratified_sampling
-        if self.stratified_sampling:
+        self.mode_sampling = mode_sampling
+        if self.mode_sampling == Sampling.STRAT:
             raise ValueError('Stratified sampling is not yet implemented!')
-        if self.gt_sampling and self.adv_sampling:
-            raise ValueError('Adversarial sampling and Adding Ground Truth are both set to true !')
 
         self.label_dim = label_dim
 
@@ -342,13 +338,13 @@ class DeepValueNetwork:
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
 
-        if self.adv_sampling and self.training and np.random.rand() >= 0.5:
+        if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             # n_steps = random.randint(1, self.n_steps_adv)
             pred_labels = self.inference(x, init_labels, self.n_steps_adv,
                                          gt_labels=gt_labels, ep=ep)
-        elif self.gt_sampling and self.training and np.random.rand() >= 0.5:
+        elif self.mode_sampling == Sampling.GT and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
@@ -449,7 +445,6 @@ class DeepValueNetwork:
 
             inputs, targets = inputs.to(self.device), targets.to(self.device)
             inputs, targets = inputs.float(), targets.float()
-
             t_size += len(inputs)
 
             self.model.zero_grad()
@@ -501,7 +496,8 @@ class DeepValueNetwork:
                 oracle = self.get_oracle_value(pred_labels, targets)
 
                 loss += self.loss_fn(output, oracle)
-                mean_iou.append(oracle.mean())
+                for o in oracle:
+                    mean_iou.append(o)
                 self.new_ep = False
 
         mean_iou = torch.stack(mean_iou)
@@ -542,7 +538,8 @@ class DeepValueNetwork:
 
                 final_pred = average_over_crops(pred_labels, self.device)
                 oracle = self.get_oracle_value(final_pred, targets)
-                mean_iou.append(oracle.mean())
+                for o in oracle:
+                    mean_iou.append(o)
 
                 print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
                 img = raw_inputs.detach().cpu()
@@ -598,15 +595,13 @@ def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads 
 
 
 def run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model,
-                  n_epochs, adv_sampling=False, gt_sampling=False, stratified_sampling=False,
-                  shuffle_n_size=False, learning_rate=0.01, weight_decay=1e-3, inf_lr=50.,
-                  momentum_inf=0, n_steps_inf=30, n_steps_adv=1,
+                  n_epochs, mode_sampling=Sampling.GT, shuffle_n_size=False, learning_rate=0.01,
+                  weight_decay=1e-3, inf_lr=50., momentum_inf=0, n_steps_inf=30, n_steps_adv=1,
                   step_size_scheduler_main=300, gamma_scheduler_main=1.):
-    DVN = DeepValueNetwork(dir_path, use_cuda, adv_sampling=adv_sampling,
-                           gt_sampling=gt_sampling, stratified_sampling=stratified_sampling,
-                           shuffle_n_size=shuffle_n_size, learning_rate=learning_rate,
-                           weight_decay=weight_decay, inf_lr=inf_lr, momentum_inf=momentum_inf,
-                           n_steps_inf=n_steps_inf, n_steps_adv=n_steps_adv)
+
+    DVN = DeepValueNetwork(dir_path, use_cuda, mode_sampling, shuffle_n_size=shuffle_n_size,
+                           learning_rate=learning_rate, weight_decay=weight_decay, inf_lr=inf_lr,
+                           momentum_inf=momentum_inf, n_steps_inf=n_steps_inf, n_steps_adv=n_steps_adv)
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=step_size_scheduler_main,
@@ -616,9 +611,7 @@ def run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model,
                'loss_valid': [], 'IOU_valid': [], 'batch_size': train_loader.batch_size,
                'shuffle_n_size': shuffle_n_size, 'learning_rate': learning_rate,
                'weight_decay': weight_decay, 'batch_size_eval': valid_loader.batch_size,
-               'adv_sampling': adv_sampling,
-               'gt_sampling': gt_sampling, 'stratified_sampling': stratified_sampling,
-               'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf, 'momentum_inf': momentum_inf,
+               'mode_sampling': mode_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf, 'momentum_inf': momentum_inf,
                'step_size_scheduler_main': step_size_scheduler_main,
                'gamma_scheduler_main': gamma_scheduler_main, 'n_steps_adv': n_steps_adv}
 
@@ -635,7 +628,7 @@ def run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model,
     results_path = results_path + str(i)
 
     best_iou_valid = 0
-    str_model = '_GT_' if gt_sampling else '_Adv_'
+    str_model = '_GT_' if mode_sampling == Sampling.GT else '_Adv_'
 
     for epoch in range(n_epochs):
         loss_train = DVN.train(train_loader, epoch)
@@ -698,11 +691,11 @@ def start():
 
     # train_set.normalize = transforms.Normalize(mean_imgs, std_imgs)
     # valid_set.normalize = transforms.Normalize(mean_imgs, std_imgs)
+    mode_sampling = Sampling.ADV
 
     # Run the model
     run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model=True,
-                  n_epochs=1000, adv_sampling=True, gt_sampling=False,
-                  stratified_sampling=False, shuffle_n_size=False, learning_rate=1e-4,
+                  n_epochs=1000, mode_sampling=mode_sampling, shuffle_n_size=False, learning_rate=1e-4,
                   weight_decay=1e-5, inf_lr=5e3, momentum_inf=0, n_steps_inf=30,
                   n_steps_adv=3, step_size_scheduler_main=800, gamma_scheduler_main=0.10)
 
@@ -720,10 +713,8 @@ def run_test_set():
     image_dir = dir_path + '/images'
     mask_dir = dir_path + '/masks'
 
-    DVN = DeepValueNetwork(dir_path, use_cuda, adv_sampling=True,
-                           gt_sampling=False, stratified_sampling=False, shuffle_n_size=False,
-                           learning_rate=1e-4, weight_decay=1e-3, inf_lr=5e2, momentum_inf=0,
-                           n_steps_inf=30, n_steps_adv=3)
+    DVN = DeepValueNetwork(dir_path, use_cuda, learning_rate=1e-4, weight_decay=1e-3,
+                           inf_lr=5e2, n_steps_inf=30, n_steps_adv=3)
 
     DVN.model = ConvNet().to(device)
     DVN.model.load_state_dict(torch.load(dir_path + '/11_Adv_.pth'))

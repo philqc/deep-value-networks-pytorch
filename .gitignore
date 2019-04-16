@@ -2,3 +2,9 @@ Image_Segmentation/pred/
 Image_Segmentation/results/
 **/.idea/workspace.xml
 **/.idea/tasks.xml
+Image_Tagging/annotations/
+Image_Tagging/mirflickr25k.zip
+Image_Tagging/mirflickr25k_annotations_v080.zip
+Image_Tagging/mirflickr25k/
+
+
