@@ -21,6 +21,6 @@ of the inputs. Also can be used as a baseline model
   
 
 ### Reproducibility ###
-We could easily reproduce the authors' results with the DVN on Bibtex (F1 of 44.07% on the test set). Conversely,
-we had trouble reproducing the SPEN's results and we only achieved a F1 Score of 40% on the test set, compared to 42.2 for the authors. We could have probaly done some extra hyper-parameter search to reach it though. <br /> 
+We could easily reproduce the authors' results with the DVN on Bibtex (F1 of 44.91% on the test set). Conversely,
+for the SPEN model, we achieved a F1 Score of 41.07% on the test set, compared to 42.2% for the authors. We could have probaly done some extra hyper-parameter search to reach it though. <br /> 
 <img src="figures/bibtex_dvn_comparisons.png" width="80%">
