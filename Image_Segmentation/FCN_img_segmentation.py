@@ -554,12 +554,12 @@ if __name__ == "__main__":
         print('-------------------------------------------')
         if i == 0:
             mean_iou = 0
-#            print('Single crop IOU prediction')
-#            for epoch in range(1, 100):       
-#                # validation loss
-#                v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
-#                mean_iou+= v_mean_iou
-#            print('Validation Mean_IOU(%):{}%'.format(mean_iou/100))
+            print('Single crop IOU prediction')
+            for epoch in range(1, 100):       
+                # validation loss
+                v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
+                mean_iou+= v_mean_iou
+            print('Validation Mean_IOU(%):{}%'.format(mean_iou/100))
         else:
             print('36 Crops IOU prediction')
             test(FCN_test, test_loader, device)
