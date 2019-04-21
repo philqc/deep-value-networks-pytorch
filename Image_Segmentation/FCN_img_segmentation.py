@@ -15,6 +15,8 @@ from torch.autograd import Variable
 from torchvision import transforms, utils
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
+from auxiliary_functions import *
+
 import torchvision.transforms.functional as TF
 
 from distutils.version import LooseVersion
@@ -28,15 +30,14 @@ __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
 # build the dataset, generate the "training tuple"
 class WeizmannHorseDataset(Dataset):
-    """Weizmann Horse Dataset"""
-    
-    def __init__(self, img_dir, mask_dir, transform = None):
+    """ Weizmann Horse Dataset """
+
+    def __init__(self, img_dir, mask_dir, subset='train', random_mirroring=True, thirty_six_cropping=False):
         """
         Args:
             img_dir(string): Path to the image file (training image)
             mask_dir(string): Path to the mask file (segmentation result)
-            transform (callable, optional): Optional transform to be applied
-                on a sample.
+            subset(string): 'train' or 'valid' or 'test'
         """
         self.img_dir = img_dir
         self.mask_dir = mask_dir
@@ -44,39 +45,127 @@ class WeizmannHorseDataset(Dataset):
         self.img_names = os.listdir(img_dir)
         self.mask_names = os.listdir(mask_dir)
 
-        self.transform = transform
-        
+        self.img_names.sort()
+        self.mask_names.sort()
+
+        if subset == 'test':
+            self.img_names = self.img_names[200:]
+            self.mask_names = self.mask_names[200:]
+        elif subset == 'valid':
+            self.img_names = self.img_names[180:200]
+            self.mask_names = self.mask_names[180:200]
+        else:
+            self.img_names = self.img_names[:180]
+            self.mask_names = self.mask_names[:180]
+
+        self.transform = transforms.Compose([transforms.ToPILImage(),
+                                             transforms.Resize(size=(32, 32))])
+        self.random_mirroring = random_mirroring
+        self.normalize = None
+        self.thirty_six_cropping = thirty_six_cropping
+
     def __len__(self):
         return len(self.img_names)
-        
+
     def __getitem__(self, idx):
         img_name = os.path.join(self.img_dir, self.img_names[idx])
         mask_name = os.path.join(self.mask_dir, self.mask_names[idx])
-        
+
         image = io.imread(img_name)
         mask = io.imread(mask_name)
-        
-        if self.transform:
-                      
-            image = self.transform(image)
-            
-            # create a channel for mask so as to transform
-            mask = self.transform(np.expand_dims(mask, axis=2))
-            
-            #Random crop
+
+        image = self.transform(image)
+
+        # create a channel for mask so as to transform
+        mask = self.transform(np.expand_dims(mask, axis=2))
+
+        if self.thirty_six_cropping:
+            # Use 36 crops averaging for test set
+            input_img = image
+
+            image = thirty_six_crop(image, 24)
+            if self.normalize is not None:
+                transform_test = transforms.Compose(
+                    [transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
+                     transforms.Lambda(lambda crops: torch.stack([self.normalize(crop) for crop in crops]))])
+            else:
+                transform_test = transforms.Compose(
+                    [transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops]))])
+
+            image = transform_test(image)
+        else:
+            # Random crop
             i, j, h, w = transforms.RandomCrop.get_params(image, output_size=(24, 24))
-            image = TF.crop(image, i, j, h, w)                
+            image = TF.crop(image, i, j, h, w)
             mask = TF.crop(mask, i, j, h, w)
-                
+
             # Random Horizontal flipping
-            if random.random() > 0.5:
+            if self.random_mirroring and random.random() > 0.50:
                 image = TF.hflip(image)
                 mask = TF.hflip(mask)
 
-            image = TF.to_tensor(image)      
-            mask = TF.to_tensor(mask)
-        
-        return image, mask
+            input_img = image
+            image = TF.to_tensor(image)
+            if self.normalize is not None:
+                image = self.normalize(image)
+
+        input_img = TF.to_tensor(input_img)
+        mask = TF.to_tensor(mask)
+
+        # binarize mask again
+        mask = mask >= 0.5
+
+        return input_img, image, mask
+
+    def compute_mean_and_stddev(self):
+        n_images = len(self.img_names)
+        masks, images = [], []
+
+        # ToTensor transforms the images/masks in range [0, 1]
+        transform = transforms.Compose([transforms.ToPILImage(),
+                                        transforms.Resize(size=(32, 32)),
+                                        transforms.ToTensor()])
+
+        for i in range(n_images):
+            mask_name = os.path.join(self.mask_dir, self.mask_names[i])
+            img_name = os.path.join(self.img_dir, self.img_names[i])
+            mask = io.imread(mask_name)
+            image = io.imread(img_name)
+
+            image = transform(image)
+            # create a channel for mask so as to transform
+            mask = transform(np.expand_dims(mask, axis=2))
+
+            # show_img(image, black_and_white=False)
+            # show_img(mask.view(32, 32), black_and_white=True)
+            masks.append(mask)
+            images.append(image)
+
+        # after torch.stack, we should have n_images x 1 x 32 x 32 for mask
+        # and have n_images x 3 x 32 x 32 for images
+        images, masks = torch.stack(images), torch.stack(masks)
+
+        # compute mean and std_dev of images
+        # put the images in n_images x 3 x (32x32) shape
+        images = images.view(images.size(0), images.size(1), -1)
+        mean_imgs = images.mean(2).sum(0) / n_images
+        std_imgs = images.std(2).sum(0) / n_images
+
+        # Find mean_mask for visualization purposes
+        height, width = masks.shape[2], masks.shape[3]
+        # flatten
+        masks = masks.view(n_images, 1, -1)
+        mean_mask = torch.mean(masks, dim=0)
+        # go back to 32 x 32 view
+        mean_mask = mean_mask.view(1, 1, height, width)
+
+        print_mask = False
+        if print_mask:
+            img_to_show = mean_mask.squeeze(0)
+            img_to_show = img_to_show.squeeze(0)
+            show_img(img_to_show, black_and_white=True)
+
+        return mean_imgs, std_imgs, mean_mask
         
 #%% extended domain oracle value function
 #define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?) 
@@ -141,7 +230,7 @@ def train(args, model, device, train_loader, optimizer, epochs) :
     train_loss = 0
     total_iou = 0
     #define the operation batch-wise
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (raw_inputs, data, target) in enumerate(train_loader):
         #send the data into GPU or CPU
         data, target = data.to(device), target.to(device)
         target[target > 0] = 1
@@ -199,13 +288,13 @@ def train(args, model, device, train_loader, optimizer, epochs) :
     return train_loss/len(train_loader), total_iou/len(train_loader)
 
 #Define Test Method
-def testing(args, model, device, test_loader, epochs):
+def valid(args, model, device, test_loader, epochs):
     model.eval()
     test_loss = 0
     total_iou = 0
     #What is this ?
     with torch.no_grad():
-        for data, target in test_loader:
+        for (raw_inputs, data, target) in test_loader:
             data, target = data.to(device), target.to(device)
 
             target[target > 0] = 1
@@ -245,6 +334,10 @@ def testing(args, model, device, test_loader, epochs):
     return test_loss/len(test_loader), total_iou/len(test_loader)
 
 
+
+
+
+
 if __name__ == "__main__":
     
     # Version of Pytorch
@@ -257,7 +350,7 @@ if __name__ == "__main__":
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=128, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=100, metavar='N',
+    parser.add_argument('--epochs', type=int, default=200, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -290,29 +383,35 @@ if __name__ == "__main__":
     #Visualize the output of each layer via torchSummary
     summary(model, input_size = (3,24,24))
     
-
-    #Use Dataset to resize ,convert to Tensor, and data augmentation
-    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform = 
-                                         transforms.Compose([
-                                               transforms.ToPILImage(),
-                                               transforms.Resize(size=(32,32))                                         
-                                           ]))
+#    #Use Dataset to resize ,convert to Tensor, and data augmentation
+#    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform = 
+#                                         transforms.Compose([
+#                                               transforms.ToPILImage(),
+#                                               transforms.Resize(size=(32,32))                                         
+#                                           ]))
     
     batch_size = args.batch_size
+    batch_size_valid = batch_size
+
     
-    dataset_size = len(dataset)
-    indices = list(range(dataset_size))        
-    train_indices, val_indices = indices[0:200], indices[201:-1]
+    train_set = WeizmannHorseDataset(image_dir, mask_dir, subset='train',
+                                     random_mirroring=False, thirty_six_cropping=False)
+    valid_set = WeizmannHorseDataset(image_dir, mask_dir, subset='valid',
+                                     random_mirroring=False, thirty_six_cropping=False)
+
+
     
-    # Creating PT data samplers and loaders:
-    train_sampler = SubsetRandomSampler(train_indices)
-    valid_sampler = SubsetRandomSampler(val_indices)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size
+    )
+
+    valid_loader = DataLoader(
+        valid_set,
+        batch_size=batch_size_valid
+    )
     
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
-                                           sampler=train_sampler)
     
-    valid_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
-                                                sampler=valid_sampler)
     
 #%%    
     #optimizer
@@ -334,15 +433,19 @@ if __name__ == "__main__":
             epoch, t_loss, t_mean_iou))
         
         # validation loss
-        v_loss, v_mean_iou = testing(args, model, device, valid_loader, epoch)
+        v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
         print('Validation Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, v_loss, v_mean_iou))
+        
         
         train_loss.append(t_loss)
         train_iou.append(t_mean_iou)
         validation_loss.append(v_loss)
         validation_iou.append(v_mean_iou)
-        best_val_iou = max(best_val_iou, v_mean_iou)
+        if v_mean_iou > best_val_iou:
+            best_val_iou = v_mean_iou
+            print('--- Saving model at IOU_{:.2f} ---'.format(100 * best_val_iou))
+            torch.save(model.state_dict(),'FCN_best.pth')
         
         print('-------------------------------------------------------')
         
@@ -378,9 +481,87 @@ if __name__ == "__main__":
     # test set
     print("Best Validation Mean IOU:", best_val_iou)
    
-    
-    # Save the trained model(which means parameters)
-    if args.save_model:
-        torch.save(model.state_dict(), "FCN_Horse")
-    
 
+#%%
+    def test(model, loader, device):
+        """ At Test time, we are averaging our predictions
+        over 36 crops of 24x24 mask to predict a 32x32 mask
+        """
+
+        model.eval()
+        mean_iou = []
+
+        with torch.no_grad():
+            for batch_idx, (raw_inputs, inputs, targets) in enumerate(loader):
+                inputs, targets = inputs.to(device), targets.to(device)
+
+
+                # For test: inputs is a 5d tensor
+                bs, ncrops, channels, h, w = inputs.size()
+
+
+                # fuse batch size and ncrops to know our estimated IOU
+                output = model(inputs.view(-1, channels, h, w))
+                log_p = F.log_softmax(output, dim=1)
+                pred = torch.argmax(log_p, dim=1)
+                # go back to normal shape and take the mean in the 1 dim
+                pred= pred.view(bs, ncrops, h, w)
+#                output = output.view(bs, ncrops, h, w)
+
+                final_pred = average_over_crops(pred, device)
+                oracle = IOU_batch(final_pred, targets.float())
+                for o in oracle:
+                    mean_iou.append(o)
+
+                print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
+                img = raw_inputs.detach().cpu()
+                show_grid_imgs(img)
+                mask = final_pred.detach().cpu()
+                show_grid_imgs(mask.float())
+                print('Mask binary')
+                bin_mask = mask >= 0.50
+                show_grid_imgs(bin_mask.float())
+                print('---------------------------------------')
+
+        mean_iou = torch.stack(mean_iou)
+        mean_iou = torch.mean(mean_iou)
+        mean_iou = mean_iou.cpu().numpy()
+
+        print('Test set: IOU = {:.2f}%'.format(100 * mean_iou))
+
+        return mean_iou
+
+
+
+#%% Test on 36 crop
+    FCN_test = FCN().to(device)
+    FCN_test.load_state_dict(torch.load('FCN_best.pth'))
+    FCN_test.eval()
+    
+    # Compute IOU single prediction on 24x24 crops and 36 crops averaging on 32x32
+    for i in range(2):
+        thirtysix_crops = False if i == 0 else True
+        test_set = WeizmannHorseDataset(image_dir, mask_dir, subset='test',
+                                        random_mirroring=False, thirty_six_cropping=thirtysix_crops)
+
+        batch_size_eval = 8
+
+        test_loader = DataLoader(
+            test_set,
+            batch_size=batch_size_eval,
+        )
+
+        print('-------------------------------------------')
+        if i == 0:
+            mean_iou = 0
+#            print('Single crop IOU prediction')
+#            for epoch in range(1, 100):       
+#                # validation loss
+#                v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
+#                mean_iou+= v_mean_iou
+#            print('Validation Mean_IOU(%):{}%'.format(mean_iou/100))
+        else:
+            print('36 Crops IOU prediction')
+            test(FCN_test, test_loader, device)
+    
+    
