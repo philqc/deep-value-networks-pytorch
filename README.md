@@ -1,5 +1,5 @@
 # Structured Prediction with Deep Value Networks
-**Implementation in python with PyTorch.
+**Implementation in python with PyTorch. <br />
 By Philippe Beardsell and Chih-Chao Hsu**
 
 ### Implemented ###
@@ -28,6 +28,8 @@ F1 Score (%) on the Bibtex dataset:
 | SPEN               | 41.6 | 42.2   |
 | DVN + Ground Truth | 42.9 |  N/A   |
 | DVN + Adversarial  | 44.9 | 44.7   |
+
+<img src="figures/bibtex_dvn_comparisons.png" width="80%">
 
 #### Image segmentation on the Weizmann Horses dataset ####
 Dataset available at https://avaminzhang.wordpress.com/2012/12/07/%E3%80%90dataset%E3%80%91weizmann-horses/
@@ -58,4 +60,4 @@ to make independent predictions for each label.
 | DVN + Adversarial  | N/A | 1.98  | N/A |
 
 
-<img src="figures/bibtex_dvn_comparisons.png" width="80%">
+
