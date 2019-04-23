@@ -1,6 +1,6 @@
 # Structured Prediction with Deep Value Networks
 **Implementation in python with PyTorch. <br />
-By Philippe Beardsell and Chih-Chao Hsu. **
+By Philippe Beardsell and Chih-Chao Hsu.**
 
 ### Implemented ###
 * Structured Prediction Energy Networks (SPEN) (Belanger & McCallum 2015) <br />
