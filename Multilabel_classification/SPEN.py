@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
 import random
+import pdb
 from Multilabel_classification.feature_network import FeatureMLP
 
 
@@ -71,7 +72,7 @@ class EnergyNetwork(nn.Module):
 
 class SPEN:
     def __init__(self, use_cuda, path_feature_extractor, input_dim=1836, label_dim=159, num_pairwise=16,
-                 learning_rate=0.1, weight_decay=1e-4, non_linearity=nn.Softplus()):
+                 learning_rate=0.001, weight_decay=1e-4, non_linearity=nn.Softplus()):
 
         self.device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -89,15 +90,17 @@ class SPEN:
                                    num_pairwise, non_linearity).to(self.device)
 
         # Squared loss
-        self.loss_fn = nn.MSELoss()
+        self.loss_fn = nn.MSELoss(reduction='sum')
         # Log loss
         # self.loss_fn = nn.BCEWithLogitsLoss()
 
         # From SPEN paper, for training we used SGD + momentum
         # with momentum = 0.9, and learning rate + weight decay
         # are decided using the validation set
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
-                                         momentum=0.9, weight_decay=weight_decay)
+        #self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
+        #                                 momentum=0.9, weight_decay=weight_decay)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5,
+                                          weight_decay=weight_decay)
 
     def get_ini_labels(self, x):
         """
@@ -108,7 +111,7 @@ class SPEN:
         y.requires_grad = True
         return y
 
-    def inference(self, x, gt_labels, num_iterations=30):
+    def inference(self, x, gt_labels=None, num_iterations=30):
 
         if self.training:
             self.model.eval()
@@ -118,7 +121,6 @@ class SPEN:
         # From SPEN paper, inference we use SGD with momentum
         # where momentum=0.95 and learning_rate = 0.1
         optim_inf = SGD(y_pred, lr=0.1, momentum=0.95)
-
         with torch.enable_grad():
 
             for i in range(num_iterations):
@@ -126,7 +128,10 @@ class SPEN:
                 pred_energy = self.model(x, y_pred)
 
                 # Max-margin surrogate objective (with E(ground_truth) missing)
-                loss = pred_energy - self.loss_fn(y_pred, gt_labels)
+                if gt_labels is None:
+                    loss = pred_energy
+                else:
+                    loss = pred_energy - self.loss_fn(y_pred, gt_labels)
 
                 grad = torch.autograd.grad(loss, y_pred, grad_outputs=torch.ones_like(loss),
                                            only_inputs=True)
@@ -157,7 +162,6 @@ class SPEN:
             t_size += len(inputs)
 
             self.model.zero_grad()
-
             f_x = self.feature_extractor(inputs)
 
             pred_labels = self.inference(f_x, targets)
@@ -190,7 +194,7 @@ class SPEN:
 
         self.model.eval()
         self.training = False
-        loss, t_size = 0, 0
+        t_loss, t_size = 0, 0
         mean_f1 = []
 
         with torch.no_grad():
@@ -201,17 +205,17 @@ class SPEN:
 
                 f_x = self.feature_extractor(inputs)
 
-                pred_labels = self.inference(f_x, targets)
-                pred_energy = self.model(f_x, pred_labels)
+                pred_labels = self.inference(f_x)
                 # Energy ground truth
                 gt_energy = self.model(f_x, targets)
+                pred_energy = self.model(f_x, pred_labels)
 
                 # Max-margin Loss
                 pre_loss = self.loss_fn(pred_labels, targets) - pred_energy + gt_energy
                 # Take the mean over all losses of the mini batch
                 pre_loss = torch.max(pre_loss, torch.zeros(pre_loss.size()))
-                loss += torch.mean(pre_loss)
-
+                loss = torch.mean(pre_loss)
+                t_loss += loss
                 # round prediction to binary 0/1
                 pred_labels = pred_labels.round().int()
 
@@ -287,10 +291,10 @@ def run_the_model(dir_path, path_feature_extractor):
 
     save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
 
-    scheduler = torch.optim.lr_scheduler.StepLR(Spen.optimizer, step_size=150, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(Spen.optimizer, step_size=10, gamma=0.1)
 
     best_f1_valid = 0
-    for epoch in range(375):
+    for epoch in range(25):
         loss_train = Spen.train(train_loader, epoch)
         loss_valid, f1_valid = Spen.valid(valid_loader)
         scheduler.step()
@@ -301,10 +305,11 @@ def run_the_model(dir_path, path_feature_extractor):
         with open(save_results_file, 'wb') as fout:
             pickle.dump(results, fout)
 
-        if epoch > 10 and f1_valid > best_f1_valid:
+        if f1_valid > best_f1_valid:
             best_f1_valid = f1_valid
-            print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_f1_valid))
-            torch.save(Spen.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+            if epoch > 0:
+                print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_f1_valid))
+                torch.save(Spen.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
 
     plot_results(results, False)
 
@@ -316,7 +321,7 @@ if __name__ == "__main__":
 
     #run_the_model(dir_path, path_feature_extractor)
 
-    run_test_set(dir_path, path_feature_extractor)
+    #run_test_set(dir_path, path_feature_extractor)
 
 
 

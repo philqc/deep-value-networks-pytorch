@@ -130,7 +130,7 @@ def print_a_sentence(x, y, txt_inputs, txt_labels):
     """ To visualize the data """
     print('-----------------')
     for i, x in enumerate(x):
-        if x == 1:
+        if x > 0.99:
             print(txt_inputs[i])
     
     print('-----------------')
@@ -172,10 +172,7 @@ def compute_f1_score(labels, outputs):
 
 
 def calculate_hamming_loss(true_labels, pred_labels):
-    loss = 0.0
-    for true, guess in zip(true_labels, pred_labels):
-        for val1, val2 in zip(true, guess):
-            loss += abs(val1 - val2)
+    loss = torch.sum(torch.abs(true_labels - pred_labels))
     return loss
 
 
@@ -200,7 +197,7 @@ def plot_results(results, iou=False):
     """
     str_score = 'IOU' if iou else 'F1 Score'
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-    ax1.set_title('Validation Loss')
+    ax1.set_title('Loss')
     ax1.set_ylabel('loss')
     ax1.set_xlabel('epochs')
     ax2.set_title('Validation ' + str_score)

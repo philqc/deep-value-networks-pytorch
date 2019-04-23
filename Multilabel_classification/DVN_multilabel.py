@@ -395,7 +395,7 @@ def run_the_model():
     print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
 
     # Choose ground truth sampling or adversarial sampling
-    mode_sampling = Sampling.GT
+    mode_sampling = Sampling.ADV
     str_res = 'Ground_Truth' if mode_sampling == Sampling.GT else 'Adversarial'
     print('Using {} Sampling'.format(str_res))
 
