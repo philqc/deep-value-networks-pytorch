@@ -57,7 +57,7 @@ to make independent predictions for each label.
 | SPEN               | 2.24 |  N/A   | 2.51|
 | DVN + Ground Truth | 2.22 |  N/A   | 2.47 |
 | DVN + Adversarial  | 2.3 | N/A   | N/A |
-| DVN + Adversarial  | N/A | 1.98  | N/A |
+| NLTop (Graber & al. 2018) | N/A | 1.98  | N/A |
 
 
 
