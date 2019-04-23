@@ -16,9 +16,7 @@ from torchvision import transforms, utils
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from auxiliary_functions import *
-
 import torchvision.transforms.functional as TF
-
 from distutils.version import LooseVersion
 #Ignore warnings
 import warnings 
@@ -166,10 +164,10 @@ class WeizmannHorseDataset(Dataset):
             show_img(img_to_show, black_and_white=True)
 
         return mean_imgs, std_imgs, mean_mask
-        
-#%% extended domain oracle value function
-#define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?) 
-        
+
+
+# extended domain oracle value function
+# define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?)
 def IOU_batch(y_pred, y_true):
     batch_size = y_pred.shape[0]
     
@@ -179,7 +177,8 @@ def IOU_batch(y_pred, y_true):
     
     return scores
 
-#y_pred and y_true are all "torch tensor"
+
+# y_pred and y_true are all "torch tensor"
 def IOU(y_pred, y_true):
     
     y_pred = torch.flatten(y_pred).reshape(1,-1)
@@ -191,29 +190,29 @@ def IOU(y_pred, y_true):
     union = torch.sum(torch.max(y_concat, 0)[0]).float()
     return intersect / max(10 ** -8, union)
 
-#%%
+
 def weights_init(m):
     if isinstance(m, nn.Conv2d):
         torch.nn.init.xavier_uniform(m.weight.data)
         
         
-#define the DVN for Image segmentation (Can be any type of network u like)
+# define the DVN for Image segmentation (Can be any type of network u like)
 class FCN(nn.Module):
      
-    #define each layer of neural network
+    # define each layer of neural network
     def __init__(self):
-         super(FCN, self). __init__()
-          #Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
-         self.conv1 = nn.Conv2d(3, 64, 5, 1, padding=2)
-         self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
-         self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
+        super(FCN, self). __init__()
+        # Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, groups=1, bias=True)
+        self.conv1 = nn.Conv2d(3, 64, 5, 1, padding=2)
+        self.conv2 = nn.Conv2d(64, 128, 5, 2, padding=2)
+        self.conv3 = nn.Conv2d(128, 128, 5, 2, padding=2)
          
-         #Deconvolution
-         #nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=True, dilation=1)
-         self.deconv1 = nn.ConvTranspose2d(128, 2, kernel_size=4, stride=2, padding=1)
-         self.deconv2 = nn.ConvTranspose2d(2, 2, kernel_size=4, stride=2, padding=1)
+        # Deconvolution
+        # nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride=1, padding=0, output_padding=0, groups=1, bias=True, dilation=1)
+        self.deconv1 = nn.ConvTranspose2d(128, 2, kernel_size=4, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(2, 2, kernel_size=4, stride=2, padding=1)
          
-    #define how input will be processed through those layers
+    # define how input will be processed through those layers
     def forward(self, x):
          x = F.relu(self.conv1(x))
          x = F.relu(self.conv2(x))
@@ -222,20 +221,20 @@ class FCN(nn.Module):
          x = self.deconv2(x) 
          return x
 
-#%%      
-#define the training method  
+
+# define the training method
 def train(args, model, device, train_loader, optimizer, epochs) :
     
     model.train()
     train_loss = 0
     total_iou = 0
-    #define the operation batch-wise
+    # define the operation batch-wise
     for batch_idx, (raw_inputs, data, target) in enumerate(train_loader):
-        #send the data into GPU or CPU
+        # send the data into GPU or CPU
         data, target = data.to(device), target.to(device)
         target[target > 0] = 1
         
-        #visualization purpose
+        # visualization purpose
 #        if epochs == 101:
 #            i = random.randint(1,5)
 #            print(i)
@@ -244,18 +243,18 @@ def train(args, model, device, train_loader, optimizer, epochs) :
 #            plt.figure()
 #            plt.imshow(np.squeeze(target[i].to('cpu').numpy().transpose((1, 2, 0))))
         
-        #clear the gradient in the optimizer in the begining of each backpropagation
+        # clear the gradient in the optimizer in the begining of each backpropagation
         optimizer.zero_grad()
-        #get out
+        # get out
         output = model(data)
-        #define loss
+        # define loss
         n, c, h, w = output.size()
         log_p = F.log_softmax(output, dim=1)
         
-        #prediction (pick higher probability after log softmax)
+        # prediction (pick higher probability after log softmax)
         pred = torch.argmax(log_p, dim=1)
         
-        #visualization purpose
+        # visualization purpose
 #        if epochs == 101:
 #                i = random.randint(1,5)
 #                print(i)
@@ -274,25 +273,25 @@ def train(args, model, device, train_loader, optimizer, epochs) :
         mask = target >= 0
         target = target[mask]
 
-        loss  = F.nll_loss(log_p, target.long())
-        #do backprobagation to get gradient
+        loss = F.nll_loss(log_p, target.long())
+        # do backprobagation to get gradient
         loss.backward()
         
-        #update the parameters
+        # update the parameters
         optimizer.step()
         
-        #train loss
-        train_loss+=loss.item()
-    
-    
+        # train loss
+        train_loss += loss.item()
+
     return train_loss/len(train_loader), total_iou/len(train_loader)
 
-#Define Test Method
+
+# Define Test Method
 def valid(args, model, device, test_loader, epochs):
     model.eval()
     test_loss = 0
     total_iou = 0
-    #What is this ?
+
     with torch.no_grad():
         for (raw_inputs, data, target) in test_loader:
             data, target = data.to(device), target.to(device)
@@ -300,7 +299,7 @@ def valid(args, model, device, test_loader, epochs):
             target[target > 0] = 1
             
             output = model(data)
-            #prediction (pick higher probability after log softmax)
+            # prediction (pick higher probability after log softmax)
             n, c, h, w = output.size()
             log_p = F.log_softmax(output, dim=1)
             pred = torch.argmax(log_p, dim=1)
@@ -318,8 +317,7 @@ def valid(args, model, device, test_loader, epochs):
 #                plt.imshow(np.squeeze(target[i].to('cpu').numpy().transpose((1, 2, 0))))
 #                plt.figure()
 #                plt.imshow(pred[i].to('cpu').numpy())
-                
-            
+
             log_p = log_p.transpose(1, 2).transpose(2,3)
             target = target.transpose(1, 2).transpose(2,3)
             log_p = log_p[target.repeat(1, 1, 1, c) >= 0]
@@ -327,15 +325,11 @@ def valid(args, model, device, test_loader, epochs):
             mask = target >= 0
             target = target[mask]
             
-            loss  = F.nll_loss(log_p, target.long())
-            #Average the loss (batch_wise)
+            loss = F.nll_loss(log_p, target.long())
+            # Average the loss (batch_wise)
             test_loss += loss.item()
 
     return test_loss/len(test_loader), total_iou/len(test_loader)
-
-
-
-
 
 
 if __name__ == "__main__":
@@ -343,7 +337,6 @@ if __name__ == "__main__":
     # Version of Pytorch
     print("Pytorch Version:", torch.__version__)
     
-
     # Training args
     parser = argparse.ArgumentParser(description='Fully Convolutional Network')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N',
@@ -370,18 +363,17 @@ if __name__ == "__main__":
     # Use GPU if it is available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    #root directory of dataset
+    # root directory of dataset
     image_dir = './images'
     mask_dir = './masks'
-    
-    
-    #Create FCN
+
+    # Create FCN
     model = FCN().to(device)
-    #print the model summery
+    # print the model summery
     print(model)
     
-    #Visualize the output of each layer via torchSummary
-    summary(model, input_size = (3,24,24))
+    # Visualize the output of each layer via torchSummary
+    summary(model, input_size=(3, 24, 24))
     
 #    #Use Dataset to resize ,convert to Tensor, and data augmentation
 #    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform = 
@@ -393,14 +385,11 @@ if __name__ == "__main__":
     batch_size = args.batch_size
     batch_size_valid = batch_size
 
-    
     train_set = WeizmannHorseDataset(image_dir, mask_dir, subset='train',
                                      random_mirroring=False, thirty_six_cropping=False)
     valid_set = WeizmannHorseDataset(image_dir, mask_dir, subset='valid',
                                      random_mirroring=False, thirty_six_cropping=False)
 
-
-    
     train_loader = DataLoader(
         train_set,
         batch_size=batch_size
@@ -410,14 +399,9 @@ if __name__ == "__main__":
         valid_set,
         batch_size=batch_size_valid
     )
-    
-    
-    
-#%%    
-    #optimizer
+
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
-    
-    
+
     train_loss = []
     train_iou = []
     validation_loss = []
@@ -427,7 +411,7 @@ if __name__ == "__main__":
     start_time = time.time()
     # Start Training
     for epoch in range(1, args.epochs+1):
-        #train loss
+        # train loss
         t_loss, t_mean_iou = train(args, model, device, train_loader, optimizer, epoch)
         print('Train Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, t_loss, t_mean_iou))
@@ -436,8 +420,7 @@ if __name__ == "__main__":
         v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
         print('Validation Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, v_loss, v_mean_iou))
-        
-        
+
         train_loss.append(t_loss)
         train_iou.append(t_mean_iou)
         validation_loss.append(v_loss)
@@ -450,12 +433,10 @@ if __name__ == "__main__":
         print('-------------------------------------------------------')
         
     print("--- %s seconds ---" % (time.time() - start_time))
-
-        
     print("training:", len(train_loader))
     print("validation:", len(valid_loader))
     x = list(range(1, args.epochs+1))
-    #plot train/validation loss versus epoch
+    # plot train/validation loss versus epoch
     plt.figure()
     plt.title("Train/Validation Loss")
     plt.xlabel("Epochs")
@@ -466,7 +447,7 @@ if __name__ == "__main__":
     plt.grid(True)
     plt.show()
     
-    #plot train/validation loss versus epoch
+    # plot train/validation loss versus epoch
     plt.figure()
     plt.title("Train/Validation IOU")
     plt.xlabel("Epochs")
@@ -476,13 +457,11 @@ if __name__ == "__main__":
     plt.legend(loc='upper right')
     plt.grid(True)
     plt.show()
-    
-    
+
     # test set
     print("Best Validation Mean IOU:", best_val_iou)
-   
 
-#%%
+
     def test(model, loader, device):
         """ At Test time, we are averaging our predictions
         over 36 crops of 24x24 mask to predict a 32x32 mask
@@ -531,9 +510,7 @@ if __name__ == "__main__":
 
         return mean_iou
 
-
-
-#%% Test on 36 crop
+    # Test on 36 crop
     FCN_test = FCN().to(device)
     FCN_test.load_state_dict(torch.load('FCN_best.pth'))
     FCN_test.eval()
@@ -563,5 +540,3 @@ if __name__ == "__main__":
         else:
             print('36 Crops IOU prediction')
             test(FCN_test, test_loader, device)
-    
-    
