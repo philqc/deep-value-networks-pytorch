@@ -20,7 +20,7 @@ of the inputs for multi-label classification. Also can be used as a baseline mod
 #### Multi-label classification on  Bibtex ####
 We could easily reproduce the authors' results with the DVN on Bibtex (F1 of 44.91% on the test set). We also achieved similar results for the SPEN model as the paper: a F1 Score of 41.6% on the test set, compared to 42.2% for the authors. 
 
-F1 Score (%) on the Bibtex dataset:
+F1 Score (%) on the Bibtex dataset (higher is better):
 
 | Model              | Ours | Paper  |
 | -------------------|:----:|:------:|
@@ -33,7 +33,7 @@ F1 Score (%) on the Bibtex dataset:
 
 #### Image segmentation on the Weizmann Horses dataset ####
 Dataset available at https://avaminzhang.wordpress.com/2012/12/07/%E3%80%90dataset%E3%80%91weizmann-horses/
-* IOU (%) on the Weizmann Horses dataset:
+* IOU (%) on the Weizmann Horses dataset (higher is better):
 
 | Model              | Ours | Paper  |
 | -------------------|:----:|:------:|
@@ -49,7 +49,7 @@ with Nonlinear Output Transformations from Graber & al. (2018). We didn't spend 
 and trying different alternatives which might explain our poor results compared to a simple unary model trained
 to make independent predictions for each label.
  
-* Hamming Loss  on the validation set of the Flickr dataset:
+* Hamming Loss  on the validation set of the Flickr dataset (lower is better):
 
 | Model              | Ours (10k training set) | Paper (10k training set)  | Ours (1k training set) |
 | -------------------|:----:|:------:|:------:|
