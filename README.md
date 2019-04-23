@@ -1,6 +1,6 @@
 # Structured Prediction with Deep Value Networks
 **Implementation in python with PyTorch. <br />
-By Philippe Beardsell and Chih-Chao Hsu**
+By Philippe Beardsell and Chih-Chao Hsu. **
 
 ### Implemented ###
 * Structured Prediction Energy Networks (SPEN) (Belanger & McCallum 2015) <br />
@@ -11,8 +11,8 @@ Built SPEN for multi-label classification/ image segmentation and image tagging.
 Built DVN for multi-label classification/ image segmentation and image tagging.
 * Baseline models:
 1. Feature network (SPEN): <br /> Multi-layer perceptron that computes a feature representation
-of the inputs for multi-label classification. Also can be used as a baseline model.
-2. Fully Convolutional Network (FCN). Used as a baseline model for Image Segmentation tasks.
+of the inputs for multi-label classification. 
+2. Fully Convolutional Network (FCN) for Image Segmentation.
 3. Unary model for image tagging: Pretrained AlexNet on ImageNet that was fine tuned on the MIRFLICKR25k dataset to make independent predictions for each tag of an image. Taken from the *Deep Structured Prediction with Nonlinear Output Transformations* paper(Graber & al 2018.)
 
 
