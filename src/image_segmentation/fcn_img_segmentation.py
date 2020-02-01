@@ -1,24 +1,24 @@
 from __future__ import print_function, division
-import os
 import argparse
 import time
 import random
-import numpy as np
-import matplotlib.pyplot as plt
 from skimage import io
+import matplotlib.pyplot as plt
+import os
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchsummary import summary
-from torch.autograd import Variable
-from torchvision import transforms, utils
-from torch.utils.data import Dataset, DataLoader
-from torch.utils.data.sampler import SubsetRandomSampler
-from auxiliary_functions import *
+from torchvision import transforms
+from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms.functional as TF
-from distutils.version import LooseVersion
-#Ignore warnings
+
+from src.image_segmentation.utils import (
+    thirty_six_crop, average_over_crops
+)
+from src.visualization_utils import show_img, show_grid_imgs
 import warnings 
 warnings.filterwarnings("ignore")
 
@@ -332,11 +332,57 @@ def valid(args, model, device, test_loader, epochs):
     return test_loss/len(test_loader), total_iou/len(test_loader)
 
 
-if __name__ == "__main__":
-    
+def test(model, loader, device):
+    """
+    At Test time, we are averaging our predictions
+    over 36 crops of 24x24 mask to predict a 32x32 mask
+    """
+    model.eval()
+    mean_iou = []
+
+    with torch.no_grad():
+        for batch_idx, (raw_inputs, inputs, targets) in enumerate(loader):
+            inputs, targets = inputs.to(device), targets.to(device)
+
+            # For test: inputs is a 5d tensor
+            bs, ncrops, channels, h, w = inputs.size()
+
+            # fuse batch size and ncrops to know our estimated IOU
+            output = model(inputs.view(-1, channels, h, w))
+            log_p = F.log_softmax(output, dim=1)
+            pred = torch.argmax(log_p, dim=1)
+            # go back to normal shape and take the mean in the 1 dim
+            pred = pred.view(bs, ncrops, h, w)
+            #                output = output.view(bs, ncrops, h, w)
+
+            final_pred = average_over_crops(pred, device)
+            oracle = IOU_batch(final_pred, targets.float())
+            for o in oracle:
+                mean_iou.append(o)
+
+            print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
+            img = raw_inputs.detach().cpu()
+            show_grid_imgs(img)
+            mask = final_pred.detach().cpu()
+            show_grid_imgs(mask.float())
+            print('Mask binary')
+            bin_mask = mask >= 0.50
+            show_grid_imgs(bin_mask.float())
+            print('---------------------------------------')
+
+    mean_iou = torch.stack(mean_iou)
+    mean_iou = torch.mean(mean_iou)
+    mean_iou = mean_iou.cpu().numpy()
+
+    print('Test set: IOU = {:.2f}%'.format(100 * mean_iou))
+
+    return mean_iou
+
+
+def main():
     # Version of Pytorch
     print("Pytorch Version:", torch.__version__)
-    
+
     # Training args
     parser = argparse.ArgumentParser(description='Fully Convolutional Network')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N',
@@ -355,33 +401,33 @@ if __name__ == "__main__":
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=1000, metavar='N',
                         help='how many batches to wait before logging training status')
-    
+
     parser.add_argument('--save-model', action='store_true', default=True,
                         help='For Saving the current Model')
     args = parser.parse_args()
-    
+
     # Use GPU if it is available
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
+
     # root directory of dataset
-    image_dir = './images'
-    mask_dir = './masks'
+    image_dir = '../../data/weizmann_horse/images'
+    mask_dir = '../../data/weizmann_horse/masks'
 
     # Create FCN
     model = FCN().to(device)
     # print the model summery
     print(model)
-    
+
     # Visualize the output of each layer via torchSummary
     summary(model, input_size=(3, 24, 24))
-    
-#    #Use Dataset to resize ,convert to Tensor, and data augmentation
-#    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform = 
-#                                         transforms.Compose([
-#                                               transforms.ToPILImage(),
-#                                               transforms.Resize(size=(32,32))                                         
-#                                           ]))
-    
+
+    #    #Use Dataset to resize ,convert to Tensor, and data augmentation
+    #    dataset = WeizmannHorseDataset(image_dir, mask_dir, transform =
+    #                                         transforms.Compose([
+    #                                               transforms.ToPILImage(),
+    #                                               transforms.Resize(size=(32,32))
+    #                                           ]))
+
     batch_size = args.batch_size
     batch_size_valid = batch_size
 
@@ -407,15 +453,15 @@ if __name__ == "__main__":
     validation_loss = []
     validation_iou = []
     best_val_iou = 0
-    
+
     start_time = time.time()
     # Start Training
-    for epoch in range(1, args.epochs+1):
+    for epoch in range(1, args.epochs + 1):
         # train loss
         t_loss, t_mean_iou = train(args, model, device, train_loader, optimizer, epoch)
         print('Train Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
             epoch, t_loss, t_mean_iou))
-        
+
         # validation loss
         v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
         print('Validation Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
@@ -428,31 +474,31 @@ if __name__ == "__main__":
         if v_mean_iou > best_val_iou:
             best_val_iou = v_mean_iou
             print('--- Saving model at IOU_{:.2f} ---'.format(100 * best_val_iou))
-            torch.save(model.state_dict(),'FCN_best.pth')
-        
+            torch.save(model.state_dict(), 'FCN_best.pth')
+
         print('-------------------------------------------------------')
-        
+
     print("--- %s seconds ---" % (time.time() - start_time))
     print("training:", len(train_loader))
     print("validation:", len(valid_loader))
-    x = list(range(1, args.epochs+1))
+    x = list(range(1, args.epochs + 1))
     # plot train/validation loss versus epoch
     plt.figure()
     plt.title("Train/Validation Loss")
     plt.xlabel("Epochs")
     plt.ylabel("Total Loss")
-    plt.plot(x, train_loss,label="train loss")
+    plt.plot(x, train_loss, label="train loss")
     plt.plot(x, validation_loss, color='red', label="validation loss")
     plt.legend(loc='upper right')
     plt.grid(True)
     plt.show()
-    
+
     # plot train/validation loss versus epoch
     plt.figure()
     plt.title("Train/Validation IOU")
     plt.xlabel("Epochs")
     plt.ylabel("Mean IOU")
-    plt.plot(x, train_iou,label="train iou")
+    plt.plot(x, train_iou, label="train iou")
     plt.plot(x, validation_iou, color='red', label="validation iou")
     plt.legend(loc='upper right')
     plt.grid(True)
@@ -461,60 +507,11 @@ if __name__ == "__main__":
     # test set
     print("Best Validation Mean IOU:", best_val_iou)
 
-
-    def test(model, loader, device):
-        """ At Test time, we are averaging our predictions
-        over 36 crops of 24x24 mask to predict a 32x32 mask
-        """
-
-        model.eval()
-        mean_iou = []
-
-        with torch.no_grad():
-            for batch_idx, (raw_inputs, inputs, targets) in enumerate(loader):
-                inputs, targets = inputs.to(device), targets.to(device)
-
-
-                # For test: inputs is a 5d tensor
-                bs, ncrops, channels, h, w = inputs.size()
-
-
-                # fuse batch size and ncrops to know our estimated IOU
-                output = model(inputs.view(-1, channels, h, w))
-                log_p = F.log_softmax(output, dim=1)
-                pred = torch.argmax(log_p, dim=1)
-                # go back to normal shape and take the mean in the 1 dim
-                pred= pred.view(bs, ncrops, h, w)
-#                output = output.view(bs, ncrops, h, w)
-
-                final_pred = average_over_crops(pred, device)
-                oracle = IOU_batch(final_pred, targets.float())
-                for o in oracle:
-                    mean_iou.append(o)
-
-                print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
-                img = raw_inputs.detach().cpu()
-                show_grid_imgs(img)
-                mask = final_pred.detach().cpu()
-                show_grid_imgs(mask.float())
-                print('Mask binary')
-                bin_mask = mask >= 0.50
-                show_grid_imgs(bin_mask.float())
-                print('---------------------------------------')
-
-        mean_iou = torch.stack(mean_iou)
-        mean_iou = torch.mean(mean_iou)
-        mean_iou = mean_iou.cpu().numpy()
-
-        print('Test set: IOU = {:.2f}%'.format(100 * mean_iou))
-
-        return mean_iou
-
     # Test on 36 crop
-    FCN_test = FCN().to(device)
-    FCN_test.load_state_dict(torch.load('FCN_best.pth'))
-    FCN_test.eval()
-    
+    fcn_test = FCN().to(device)
+    fcn_test.load_state_dict(torch.load('FCN_best.pth'))
+    fcn_test.eval()
+
     # Compute IOU single prediction on 24x24 crops and 36 crops averaging on 32x32
     for i in range(2):
         thirtysix_crops = False if i == 0 else True
@@ -532,11 +529,15 @@ if __name__ == "__main__":
         if i == 0:
             mean_iou = 0
             print('Single crop IOU prediction')
-            for epoch in range(1, 100):       
+            for epoch in range(1, 100):
                 # validation loss
                 v_loss, v_mean_iou = valid(args, model, device, valid_loader, epoch)
-                mean_iou+= v_mean_iou
-            print('Validation Mean_IOU(%):{}%'.format(mean_iou/100))
+                mean_iou += v_mean_iou
+            print('Validation Mean_IOU(%):{}%'.format(mean_iou / 100))
         else:
             print('36 Crops IOU prediction')
-            test(FCN_test, test_loader, device)
+            test(fcn_test, test_loader, device)
+
+
+if __name__ == "__main__":
+    main()

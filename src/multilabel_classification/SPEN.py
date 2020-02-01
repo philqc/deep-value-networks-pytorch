@@ -1,5 +1,3 @@
-from Multilabel_classification.load_bibtex import *
-from auxiliary_functions import *
 import numpy as np
 import os
 import torch
@@ -8,9 +6,12 @@ import time
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
-import random
-import pdb
-from Multilabel_classification.feature_network import FeatureMLP
+from src.multilabel_classification.feature_network import FeatureMLP
+from src.utils import MyDataset, SGD
+from src.multilabel_classification.utils import (
+    normalize_inputs, get_bibtex, compute_f1_score
+)
+from src.visualization_utils import plot_results
 
 
 class EnergyNetwork(nn.Module):

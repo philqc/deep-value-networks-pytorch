@@ -1,22 +1,20 @@
-import os
 import threading
 from queue import Queue, Empty
 import time
-import numpy as np
-import matplotlib.pyplot as plt
+import os
 from skimage import io
-import torch
+import numpy as np
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torch.utils.data import DataLoader
-from torchvision import transforms, utils
+import torch
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
 import torchvision.transforms.functional as TF
-import pickle
-import pdb
-import torch.optim as optim
-from auxiliary_functions import *
 import random
+import pickle
+
+from src.utils import Sampling
+import src.utils as utils
+
 
 __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
@@ -76,7 +74,7 @@ class WeizmannHorseDataset(Dataset):
             # Use 36 crops averaging for test set
             input_img = image
 
-            image = thirty_six_crop(image, 24)
+            image = utils.thirty_six_crop(image, 24)
             if self.normalize is not None:
                 transform_test = transforms.Compose(
                     [transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
@@ -156,7 +154,7 @@ class WeizmannHorseDataset(Dataset):
         if print_mask:
             img_to_show = mean_mask.squeeze(0)
             img_to_show = img_to_show.squeeze(0)
-            show_img(img_to_show, black_and_white=True)
+            utils.show_img(img_to_show, black_and_white=True)
 
         return mean_imgs, std_imgs, mean_mask
 
@@ -364,7 +362,7 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
-        optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
+        optim_inf = utils.SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
 
         # print condition to monitor progress
         print_cdn = False  # ep % 10 == 0 and self.new_ep
@@ -381,12 +379,12 @@ class DeepValueNetwork:
                     if print_cdn and i == num_iterations - 1:
                         print('\n value = ', value, '(output, oracle) =', torch.cat((torch.sigmoid(output), oracle), 1))
                         img = x.detach().cpu()
-                        show_grid_imgs(img)
+                        utils.show_grid_imgs(img)
 
                         print('pred_mask (left) real (right) =')
                         mask = y.detach().cpu()
                         real_mask = gt_labels.detach().cpu()
-                        show_grid_imgs(torch.cat((mask, real_mask)))
+                        utils.show_grid_imgs(torch.cat((mask, real_mask)))
                 else:
                     output = self.model(x, y)
                     value = torch.sigmoid(output)
@@ -408,11 +406,11 @@ class DeepValueNetwork:
                     if i == 4 or i == 14 or i == num_iterations - 1:
                         print('-----------INFERENCE(AFTER', i + 1, 'steps)---------------')
                         img = x.detach().cpu()
-                        show_grid_imgs(img)
+                        utils.show_grid_imgs(img)
 
                         print('pred_mask  =')
                         mask = y.detach().cpu()
-                        show_grid_imgs(mask)
+                        utils.show_grid_imgs(mask)
                     if i == num_iterations - 1:
                         img = y.detach().cpu()
                         if self.training:
@@ -425,7 +423,7 @@ class DeepValueNetwork:
                         else:
                             directory = self.dir_valid_img + str(self.filename_valid)
                             self.filename_valid += 1
-                        save_grid_imgs(img, directory)
+                        utils.save_grid_imgs(img, directory)
 
         if self.training:
             self.model.train()
@@ -536,19 +534,19 @@ class DeepValueNetwork:
 
                 pred_labels = pred_labels.view(bs, ncrops, h, w)
 
-                final_pred = average_over_crops(pred_labels, self.device)
+                final_pred = utils.average_over_crops(pred_labels, self.device)
                 oracle = self.get_oracle_value(final_pred, targets)
                 for o in oracle:
                     mean_iou.append(o)
 
                 print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
                 img = raw_inputs.detach().cpu()
-                show_grid_imgs(img)
+                utils.show_grid_imgs(img)
                 mask = final_pred.detach().cpu()
-                show_grid_imgs(mask.float())
+                utils.show_grid_imgs(mask.float())
                 print('Mask binary')
                 bin_mask = mask >= 0.50
-                show_grid_imgs(bin_mask.float())
+                utils.show_grid_imgs(bin_mask.float())
                 print('---------------------------------------')
 
         mean_iou = torch.stack(mean_iou)
@@ -646,9 +644,9 @@ def run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model,
             print('--- Saving model at IOU_{:.2f} ---'.format(100 * best_iou_valid))
             torch.save(DVN.model.state_dict(), results_path + str_model + '.pth')
 
-    plot_results(results, iou=True)
-    plot_gradients(DVN.norm_gradient_inf, 'Inference')
-    plot_gradients(DVN.norm_gradient_adversarial, 'Adversarial Examples')
+    utils.plot_results(results, iou=True)
+    utils.plot_gradients(DVN.norm_gradient_inf, 'Inference')
+    utils.plot_gradients(DVN.norm_gradient_adversarial, 'Adversarial Examples')
 
 
 def start():

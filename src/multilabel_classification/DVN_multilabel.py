@@ -1,5 +1,3 @@
-from Multilabel_classification.load_bibtex import *
-from auxiliary_functions import *
 import numpy as np
 import os
 import random
@@ -9,7 +7,12 @@ import time
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
-import pdb
+
+from src.visualization_utils import plot_results
+from src.utils import Sampling, SGD, MyDataset
+from src.multilabel_classification.utils import (
+    normalize_inputs, get_bibtex
+)
 
 # Optimal parameters for Adversarial sampling from Gygli
 # at https://github.com/gyglim/dvn/blob/master/reproduce_results.py

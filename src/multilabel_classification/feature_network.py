@@ -1,11 +1,16 @@
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
-from Multilabel_classification.load_bibtex import get_bibtex
-from auxiliary_functions import *
-import random
+import numpy as np
+import os
+from src.multilabel_classification.utils import (
+    normalize_inputs, print_a_sentence_bibtex, compute_f1_score, get_bibtex
+)
+from src.utils import MyDataset
+from src.visualization_utils import plot_results
 
 # Parameters to reproduce the baseline results of the SPEN paper
 params_baseline = {'epochs': 20, 'optim': 'adam', 'lr': 1e-3,
@@ -178,8 +183,7 @@ def run_the_model(do_feature_extraction, dir_path, use_cuda):
     indices = list(range(len(train_inputs)))
     # don't shuffle here because we want to use same train/valid split for SPEN
 
-    print_a_sentence(train_inputs[1], train_labels[1], txt_inputs, txt_labels)
-    #assert 0 == 1
+    print_a_sentence_bibtex(train_inputs[1], train_labels[1], txt_inputs, txt_labels)
 
     train_data = MyDataset(train_inputs, train_labels)
     batch_size, batch_size_eval = 32, 32
@@ -263,7 +267,7 @@ if __name__ == "__main__":
 
     run_the_model(feature_extraction, dir_path, use_cuda)
 
-    test_the_model(dir_path, use_cuda, '/bibtex_feature_network.pth')
+    test_the_model(dir_path, use_cuda, 'bibtex_feature_network.pth')
 
 
 

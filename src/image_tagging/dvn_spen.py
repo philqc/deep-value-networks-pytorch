@@ -1,25 +1,22 @@
-import os
-import threading
-from queue import Queue, Empty
 import time
-import numpy as np
-import matplotlib.pyplot as plt
-from skimage import io
-import torch
 import torchvision.models
+import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
 from torch.utils.data import DataLoader
-from torchvision import transforms, utils
-import torchvision.transforms.functional as TF
-import pickle
-import pdb
-import torch.optim as optim
-from auxiliary_functions import *
-from Image_Tagging.load_flickr import *
 import random
-from PIL import Image
+import os
+import pickle
+
+from src.visualization_utils import (
+    show_grid_imgs, plot_results
+)
+from src.utils import Sampling, SGD
+from .utils import calculate_hamming_loss, plot_hamming_loss
+from .load_flickr import (
+    show_pred_labels, inv_normalize, FlickrTaggingDataset, FlickrTaggingDatasetFeatures
+)
 
 
 class TopLayer(nn.Module):
@@ -915,8 +912,10 @@ def start(dir_path):
     run_the_model(use_unary, use_features, train_loader, valid_loader, dir_path, use_cuda)
 
 
-if __name__ == "__main__":
-
+def main():
     dir_path = os.path.dirname(os.path.realpath(__file__))
-
     start(dir_path)
+
+
+if __name__ == "__main__":
+    main()

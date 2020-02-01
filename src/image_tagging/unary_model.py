@@ -1,17 +1,15 @@
-from auxiliary_functions import *
-from Image_Tagging.load_flickr import *
 import numpy as np
 import os
 import random
 import torch
 import torch.nn as nn
-import time
-from torchvision import datasets, transforms, utils
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.sampler import SubsetRandomSampler
-import pickle
-import pdb
 import torchvision.models
+from torch.utils.data import DataLoader
+import time
+import pickle
+from src.image_tagging.utils import calculate_hamming_loss
+from .load_flickr import FlickrTaggingDataset, show_pred_labels, inv_normalize
+from src.visualization_utils import show_grid_imgs, plot_results
 
 
 class ConvNet(nn.Module):
@@ -162,7 +160,7 @@ class BaselineNetwork:
 
 def run_the_model(train_loader, valid_loader):
 
-    Baseline = BaselineNetwork(use_cuda, learning_rate=1e-4, weight_decay=0)
+    baseline = BaselineNetwork(use_cuda, learning_rate=1e-4, weight_decay=0)
 
     results_path = dir_path + '/results/'
     if not os.path.isdir(results_path):
@@ -182,11 +180,11 @@ def run_the_model(train_loader, valid_loader):
     save_model = True
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(Baseline.optimizer, step_size=30, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(baseline.optimizer, step_size=30, gamma=0.1)
 
     for epoch in range(13):
-        loss_train = Baseline.train(train_loader, epoch)
-        loss_valid, f1_valid = Baseline.valid(valid_loader, epoch)
+        loss_train = baseline.train(train_loader, epoch)
+        loss_valid, f1_valid = baseline.valid(valid_loader, epoch)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
@@ -198,16 +196,16 @@ def run_the_model(train_loader, valid_loader):
         if save_model and loss_valid < best_val_valid:
             best_val_valid = loss_valid
             print('--- Saving model at Hamming_Loss = {:.5f} ---'.format(loss_valid))
-            torch.save(Baseline.model.state_dict(), results_path + '.pth')
+            torch.save(baseline.model.state_dict(), results_path + '.pth')
 
     plot_results(results, iou=False)
-
 
 
 def strip_classifier(model):
     tmp = list(model.classifier)
     tmp = tmp[:-1]
     model.classifier = nn.Sequential(*tmp)
+
 
 def save_features(train_loader, valid_loader):
     """Save features of the Unary Model code mainly taken from
@@ -247,8 +245,7 @@ def save_features(train_loader, valid_loader):
         save(conv, valid_loader, device, dir_path + '/preprocessed/val_unary_20_epochs.pt')
 
 
-if __name__ == "__main__":
-
+def main():
     dir_path = os.path.dirname(os.path.realpath(__file__))
 
     type_dataset = 'full'
@@ -288,4 +285,9 @@ if __name__ == "__main__":
 
     run_the_model(train_loader, valid_loader)
 
-    #save_features(train_loader, valid_loader)
+    # save_features(train_loader, valid_loader)
+
+
+if __name__ == "__main__":
+    main()
+

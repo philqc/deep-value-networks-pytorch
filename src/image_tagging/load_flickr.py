@@ -1,10 +1,8 @@
-import numpy as np
 import torch
 from torchvision import transforms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset
 import os
 from PIL import Image
-
 
 NUM_TRAIN = 10000
 NUM_TEST = 10000
@@ -160,6 +158,7 @@ class FlickrTaggingDatasetFeatures(Dataset):
     """ Dataset can be downloaded at
         http://press.liacs.nl/mirflickr/mirdownload.html
     """
+
     def __init__(self, type_dataset, feature_file, annotations_folder, save_label_file, mode,
                  images_folder=None, load=False):
         if type_dataset == 'full':
@@ -193,7 +192,7 @@ class FlickrTaggingDatasetFeatures(Dataset):
                 self.annotations[order[annotation_file]] = vals
             self.img_folder = images_folder
             img_files = [img_file for img_file in os.listdir(images_folder) if
-                              os.path.isfile(os.path.join(images_folder, img_file)) and 'jpg' in img_file]
+                         os.path.isfile(os.path.join(images_folder, img_file)) and 'jpg' in img_file]
             print("NUM IMG FILES: ", len(img_files))
             img_files.sort(key=lambda name: int(name[2:name.find('.jpg')]))
 
