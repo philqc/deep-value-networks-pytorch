@@ -8,10 +8,12 @@ from src.utils import SGD, Sampling
 
 class DeepValueNetwork(BaseModel):
 
-    def __init__(self, metric_optimize: str, use_cuda: bool, mode_sampling: str, optim: str,
+    def __init__(self, torch_model, metric_optimize: str, use_cuda: bool, mode_sampling: str, optim: str,
                  learning_rate: float, weight_decay: float, inf_lr: float, n_steps_inf: int,
                  label_dim: Union[int, Tuple[int]], loss_fn: str):
         super().__init__(metric_optimize, use_cuda, label_dim)
+
+        self.model = torch_model.to(self.device)
 
         self.mode_sampling = mode_sampling
         if self.mode_sampling == Sampling.STRAT:
@@ -24,12 +26,21 @@ class DeepValueNetwork(BaseModel):
         else:
             raise ValueError(f"Invalid loss_fn provided = {loss_fn}")
 
-        self.inf_lr = inf_lr
+        if optim.lower() == 'sgd':
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        elif optim.lower() == 'adam':
+            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        else:
+            raise ValueError(f'Invalid optimizer provided: {optim}')
 
+        self.inf_lr = inf_lr
         # monitor norm gradients
         self.norm_gradient_inf = [[] for _ in range(n_steps_inf)]
         self.norm_gradient_adversarial = [[] for _ in range(n_steps_inf)]
 
+    @abstractmethod
+    def generate_output(self, x, gt_labels):
+        pass
 
     def _get_tensor_init_labels(self, x):
         if len(self.label_dim) == 2:

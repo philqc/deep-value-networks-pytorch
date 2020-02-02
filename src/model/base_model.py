@@ -21,7 +21,6 @@ class BaseModel(ABC):
 
         self.device = torch.device("cuda" if use_cuda else "cpu")
         self.label_dim = label_dim
-
         self.training = False
 
     @abstractmethod

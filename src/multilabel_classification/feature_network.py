@@ -3,12 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.utils.data.sampler import SubsetRandomSampler
 import numpy as np
 import os
 from src.multilabel_classification.utils import (
-    normalize_inputs, print_a_sentence_bibtex, compute_f1_score, get_bibtex,
-    PATH_MODELS_ML_BIB, PATH_BIBTEX
+    normalize_inputs, compute_f1_score, get_bibtex, PATH_MODELS_ML_BIB, PATH_BIBTEX,
+    load_training_set_bibtex, load_test_set_bibtex
 )
 from src.utils import MyDataset
 from src.visualization_utils import plot_results
@@ -178,32 +177,9 @@ class FeatureNetwork:
 
 
 def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, use_cuda: bool):
-    print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=True)
-    train_inputs = normalize_inputs(train_inputs, path_save, load=False)
 
-    n_train = int(len(train_inputs) * 0.95)
-    indices = list(range(len(train_inputs)))
-    # don't shuffle here because we want to use same train/valid split for SPEN
-
-    print_a_sentence_bibtex(train_inputs[1], train_labels[1], txt_inputs, txt_labels)
-
-    train_data = MyDataset(train_inputs, train_labels)
-    batch_size, batch_size_eval = 32, 32
-
-    train_loader = DataLoader(
-        train_data,
-        batch_size=batch_size,
-        sampler=SubsetRandomSampler(indices[:n_train]),
-        pin_memory=use_cuda
-    )
-
-    valid_loader = DataLoader(
-        train_data,
-        batch_size=batch_size_eval,
-        sampler=SubsetRandomSampler(indices[n_train:]),
-        pin_memory=use_cuda
-    )
+    train_loader, valid_loader = load_training_set_bibtex(path_data, use_cuda,
+                                                          batch_size=32, shuffle=False)
 
     if do_feature_extraction:
         params = params_feature_extraction
@@ -212,10 +188,6 @@ def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, u
 
     f_net = FeatureNetwork(use_cuda, lr=params['lr'], momentum=params['momentum'],
                            optimizer=params['optim'], weight_decay=params['weight_decay'])
-
-    print('train_labels.shape =', train_labels.shape,
-          'train_inputs.shape =', train_inputs.shape,
-          'length_txt_labels =', len(txt_labels))
 
     results = {'name': 'MLP_Baseline', 'loss_train': [], 'loss_valid': [], 'f1_valid': []}
 
@@ -240,22 +212,12 @@ def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, u
     plot_results(results, iou=False)
 
 
-def test_the_model(path_data: str, path_save: str, use_cuda):
+def test_the_model(path_data: str, path_save: str, use_cuda: bool):
     f_net = FeatureNetwork(use_cuda)
     f_net.model.load_state_dict(torch.load(os.path.join(path_save, FILE_FEATURE_NETWORK)))
-
-    # Testing phase
-    print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
-    test_inputs = normalize_inputs(test_inputs, path_save, load=True)
-    test_data = MyDataset(test_inputs, test_labels)
-    test_loader = DataLoader(
-        test_data,
-        batch_size=32,
-        pin_memory=use_cuda
-    )
-    print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = f_net.test(test_loader, test_labels)
+    test_loader = load_test_set_bibtex(path_data, path_save, use_cuda)
+    # TODO: Fix this
+    # loss_test, f1_test = f_net.test(test_loader, test_labels)
 
 
 def main():

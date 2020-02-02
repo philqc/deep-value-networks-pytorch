@@ -4,12 +4,12 @@ import torch
 import torch.nn as nn
 import time
 from torch.utils.data import DataLoader
-from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
 from src.multilabel_classification.feature_network import FeatureMLP
 from src.utils import MyDataset, SGD
 from src.multilabel_classification.utils import (
-    normalize_inputs, get_bibtex, compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX
+    normalize_inputs, get_bibtex, compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX,
+    load_training_set_bibtex, load_test_set_bibtex
 )
 from src.multilabel_classification.feature_network import FILE_FEATURE_NETWORK
 from src.visualization_utils import plot_results
@@ -238,15 +238,7 @@ def run_test_set(path_data: str, path_save: str, path_feature_extractor: str):
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
-    test_inputs = normalize_inputs(test_inputs, path_save, load=True)
-    test_data = MyDataset(test_inputs, test_labels)
-    test_loader = DataLoader(
-        test_data,
-        batch_size=32,
-        pin_memory=use_cuda
-    )
+    test_loader = load_test_set_bibtex(path_data, path_save, use_cuda)
 
     spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 
@@ -260,28 +252,8 @@ def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=True)
-    train_inputs = normalize_inputs(train_inputs, path_save, load=False)
-    train_data = MyDataset(train_inputs, train_labels)
-
-    n_train = int(len(train_inputs) * 0.95)
-    indices = list(range(len(train_inputs)))
-    # don't shuffle here because we want to use same train/valid split as feature extractor
-    train_loader = DataLoader(
-        train_data,
-        batch_size=32,
-        sampler=SubsetRandomSampler(indices[:n_train]),
-        pin_memory=use_cuda
-    )
-    valid_loader = DataLoader(
-        train_data,
-        batch_size=32,
-        sampler=SubsetRandomSampler(indices[n_train:]),
-        pin_memory=use_cuda
-    )
-
-    print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
+    train_loader, valid_loader = load_training_set_bibtex(path_data, path_save, use_cuda,
+                                                          batch_size=32, shuffle=False)
 
     spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 

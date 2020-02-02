@@ -1,17 +1,14 @@
 import numpy as np
 import os
-import random
 import torch
 import torch.nn as nn
-import time
-from torch.utils.data import DataLoader
-from torch.utils.data.sampler import SubsetRandomSampler
 import pickle
 
+from src.model.deep_value_network import DeepValueNetwork
 from src.visualization_utils import plot_results
-from src.utils import Sampling, SGD, MyDataset
+from src.utils import Sampling
 from src.multilabel_classification.utils import (
-    normalize_inputs, get_bibtex
+   load_training_set_bibtex, load_test_set_bibtex
 )
 
 # Optimal parameters for Adversarial sampling from Gygli
@@ -103,11 +100,11 @@ class EnergyNetwork(nn.Module):
         return e_global
 
 
-class DeepValueNetwork:
+class DVNMultiLabel(DeepValueNetwork):
 
-    def __init__(self, use_cuda, mode_sampling=Sampling.GT, optim='sgd',
-                 learning_rate=1e-1, weight_decay=1e-3, inf_lr=0.5, num_hidden=None, add_second_layer=False,
-                 feature_dim=1836, label_dim=159, num_pairwise=16, non_linearity=nn.Softplus()):
+    def __init__(self, use_cuda, metric_optimize: str, n_steps_inf: int, loss_fn: str, mode_sampling=Sampling.GT,
+                 optim='sgd', learning_rate=1e-1, weight_decay=1e-3, inf_lr=0.5, num_hidden=None,
+                 add_second_layer=False, feature_dim=1836, label_dim=159, num_pairwise=16, non_linearity=nn.Softplus()):
         """
         Parameters
         ----------
@@ -117,7 +114,7 @@ class DeepValueNetwork:
             learning rate for updating the value network parameters
         inf_lr : float
             learning rate for the inference procedure
-        mode_sampling: int
+        mode_sampling: str
             Sampling.ADV:
                 Generate adversarial tuples while training.
                 (Usually outperforms stratified sampling and adding ground truth)
@@ -127,36 +124,18 @@ class DeepValueNetwork:
             Sampling.GT:
                 Simply add the ground truth outputs y* with some probably p while training.
         """
-
-        self.device = torch.device("cuda" if use_cuda else "cpu")
-
-        self.mode_sampling = mode_sampling
-        if self.mode_sampling == Sampling.STRAT:
-            raise ValueError('Stratified sampling is not yet implemented!')
-
-        self.label_dim = label_dim
-        self.inf_lr = inf_lr
-
         if num_hidden:
-            self.num_hidden = num_hidden
+            num_hidden = num_hidden
         else:
             # SPEN uses 150 see https://github.com/davidBelanger/SPEN/blob/master/mlc_cmd.sh (feature_hid_size)
-            self.num_hidden = 200
+            num_hidden = 200
 
         # Deep Value Network is just a SPEN
-        self.model = EnergyNetwork(feature_dim, label_dim, num_hidden,
-                                   num_pairwise, add_second_layer, non_linearity).to(self.device)
+        model = EnergyNetwork(feature_dim, label_dim, num_hidden,
+                              num_pairwise, add_second_layer, non_linearity)
 
-        self.loss_fn = nn.BCEWithLogitsLoss()
-        if optim == 'sgd':
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        elif optim == 'adam':
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        else:
-            raise ValueError('Invalid optimizer: {}'.format(optim))
-
-        # turn on/off
-        self.training = False
+        super().__init__(model, metric_optimize, use_cuda, mode_sampling, optim, learning_rate,
+                         weight_decay, inf_lr, n_steps_inf, label_dim, loss_fn)
 
     def generate_output(self, x, gt_labels):
         """
@@ -168,7 +147,6 @@ class DeepValueNetwork:
         2) Generating adversarial tuples
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
-
         if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
@@ -183,173 +161,38 @@ class DeepValueNetwork:
 
         return pred_labels
 
-    def inference(self, x, y, gt_labels=None, num_iterations=20):
 
-        if self.training:
-            self.model.eval()
-
-        optim_inf = SGD(y, lr=self.inf_lr, momentum=0)
-
-        with torch.enable_grad():
-
-            for i in range(num_iterations):
-
-                if gt_labels is not None:  # Adversarial
-                    output = self.model(x, y)
-                    oracle = self.get_oracle_value(y, gt_labels)
-                    # this is the BCE loss with logits
-                    value = self.loss_fn(output, oracle)
-                else:
-                    output = self.model(x, y)
-                    value = torch.sigmoid(output)
-
-                grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value), only_inputs=True)
-
-                y_grad = grad[0].detach()
-                y = y + optim_inf.update(y_grad)
-                # Project back to the valid range
-                y = torch.clamp(y, 0, 1)
-
-        if self.training:
-            self.model.train()
-
-        return y
-
-    def train(self, loader, ep):
-
-        self.model.train()
-        self.training = True
-        n_train = len(loader.dataset)
-
-        time_start = time.time()
-        t_loss, t_size = 0, 0
-
-        for batch_idx, (inputs, targets) in enumerate(loader):
-
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
-            inputs, targets = inputs.float(), targets.float()
-            t_size += len(inputs)
-
-            self.model.zero_grad()
-
-            pred_labels = self.generate_output(inputs, targets)
-            output = self.model(inputs, pred_labels)
-            oracle = self.get_oracle_value(pred_labels, targets)
-            loss = self.loss_fn(output, oracle)
-            t_loss += loss.item()
-
-            loss.backward()
-            self.optimizer.step()
-
-            if batch_idx % 10 == 0:
-                print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; Avg_Loss = {:.5f}; '
-                      'Pred_F1 = {:.2f}%; Real_F1 = {:.2f}%'
-                      ''.format(ep, t_size, n_train, 100 * t_size / n_train,
-                                (n_train / t_size) * (time.time() - time_start), t_loss / t_size,
-                                100 * torch.sigmoid(output).mean(), 100 * oracle.mean()),
-                      end='')
-
-        t_loss /= t_size
-        self.training = False
-        print('')
-        return t_loss
-
-    def valid(self, loader, test_set=False):
-
-        self.model.eval()
-        self.training = False
-
-        loss, t_size = 0, 0
-        mean_f1, mean_output = [], []
-
-        with torch.no_grad():
-            for (inputs, targets) in loader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                inputs, targets = inputs.float(), targets.float()
-                t_size += len(inputs)
-
-                pred_labels = self.generate_output(inputs, targets)
-                output = self.model(inputs, pred_labels)
-                oracle = self.get_oracle_value(pred_labels, targets)
-                loss += self.loss_fn(output, oracle)
-
-                for o in oracle:
-                    mean_f1.append(o)
-                for o in output:
-                    mean_output.append(torch.sigmoid(o))
-
-        mean_f1, mean_output = torch.stack(mean_f1), torch.stack(mean_output)
-        mean_f1, mean_output = torch.mean(mean_f1), torch.mean(mean_output)
-        loss /= t_size
-
-        str_first = 'Test set' if test_set else 'Validation set'
-        print('{}: Avg_Loss = {:.2f}; Pred_F1 = {:.2f}%; Real_F1 = {:.2f}%'
-              ''.format(str_first, loss.item(), 100 * mean_output, 100 * mean_f1))
-
-        return loss.item(), mean_f1
-
-
-def run_test_set(mode_sampling):
-    dir_path = os.path.dirname(os.path.realpath(__file__))
+def run_test_set(path_data: str, path_save: str, mode_sampling: str):
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, use_train=False)
-    test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
-    test_data = MyDataset(test_inputs, test_labels)
-    test_loader = DataLoader(
-        test_data,
-        batch_size=32,
-        pin_memory=use_cuda
-    )
+    test_loader = load_test_set_bibtex(path_data, path_save, use_cuda)
 
     if mode_sampling == Sampling.GT:
         params = optim_params_gt
     else:
         params = optim_params_adv
 
-    DVN = DeepValueNetwork(use_cuda, optim=params['optim'], inf_lr=params['inf_lr'], learning_rate=params['lr'],
-                           weight_decay=params['weight_decay'], num_hidden=params['num_hidden'],
-                           add_second_layer=params['add_second_layer'])
+    dvn = DVNMultiLabel(use_cuda, optim=params['optim'], inf_lr=params['inf_lr'], learning_rate=params['lr'],
+                        weight_decay=params['weight_decay'], num_hidden=params['num_hidden'],
+                        add_second_layer=params['add_second_layer'])
 
     if mode_sampling == Sampling.GT:
-        DVN.model.load_state_dict(torch.load('DVN_Inference_and_Ground_Truth.pth'))
+        dvn.model.load_state_dict(torch.load('DVN_Inference_and_Ground_Truth.pth'))
     else:
-        DVN.model.load_state_dict(torch.load('DVN_Inference_and_Adversarial.pth'))
+        dvn.model.load_state_dict(torch.load('DVN_Inference_and_Adversarial.pth'))
 
     print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = DVN.valid(test_loader, test_set=True)
+    loss_test, f1_test = dvn.valid(test_loader)
 
 
-def run_the_model():
+def run_the_model(path_data: str, path_save: str):
     dir_path = os.path.dirname(os.path.realpath(__file__))
 
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, use_train=True)
-    train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
-    train_data = MyDataset(train_inputs, train_labels)
-
-    n_train = int(len(train_inputs) * 0.95)
-    indices = list(range(len(train_inputs)))
-    random.shuffle(indices)
-    train_loader = DataLoader(
-        train_data,
-        batch_size=32,
-        sampler=SubsetRandomSampler(indices[:n_train]),
-        pin_memory=use_cuda
-    )
-    valid_loader = DataLoader(
-        train_data,
-        batch_size=32,
-        sampler=SubsetRandomSampler(indices[n_train:]),
-        pin_memory=use_cuda
-    )
-
-    print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
+    train_loader, valid_loader = load_training_set_bibtex(path_data, path_save, use_cuda, batch_size=32)
 
     # Choose ground truth sampling or adversarial sampling
     mode_sampling = Sampling.ADV
@@ -361,12 +204,12 @@ def run_the_model():
     else:
         params = optim_params_adv
 
-    DVN = DeepValueNetwork(use_cuda, mode_sampling, optim=params['optim'],
-                           inf_lr=params['inf_lr'], learning_rate=params['lr'], weight_decay=params['weight_decay'],
-                           num_hidden=params['num_hidden'], add_second_layer=params['add_second_layer'])
+    dvn = DVNMultiLabel(use_cuda, mode_sampling, optim=params['optim'],
+                        inf_lr=params['inf_lr'], learning_rate=params['lr'], weight_decay=params['weight_decay'],
+                        num_hidden=params['num_hidden'], add_second_layer=params['add_second_layer'])
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=params['n_epochs_reduce'], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(dvn.optimizer, step_size=params['n_epochs_reduce'], gamma=0.1)
     total_epochs = int(params['n_epochs_reduce'] * 2.5)
 
     results = {'name': 'DVN_Inference_and_' + str_res, 'loss_train': [],
@@ -375,8 +218,8 @@ def run_the_model():
     save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
 
     for epoch in range(total_epochs):
-        loss_train = DVN.train(train_loader, epoch)
-        loss_valid, f1_valid = DVN.valid(valid_loader)
+        loss_train = dvn.train(train_loader, epoch)
+        loss_valid, f1_valid = dvn.valid(valid_loader)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
@@ -386,13 +229,14 @@ def run_the_model():
             pickle.dump(results, fout)
 
     plot_results(results, iou=False)
-    torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+    torch.save(dvn.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
 
 
 def main():
     # run_the_model()
     # Test the pretrained models (Ground Truth and Adversarial)
-    run_test_set(mode_sampling=Sampling.ADV)
+    # run_test_set(mode_sampling=Sampling.ADV)
+    pass
 
 
 if __name__ == "__main__":
