@@ -10,6 +10,10 @@ import pickle
 from src.image_tagging.utils import calculate_hamming_loss
 from .load_flickr import FlickrTaggingDataset, show_pred_labels, inv_normalize
 from src.visualization_utils import show_grid_imgs, plot_results
+from src.utils import project_root, create_path_that_doesnt_exist
+
+PATH_PREPROCESSED = os.path.join(project_root(), "saved_results",
+                                 "image_segmentation", "preprocessed")
 
 
 class ConvNet(nn.Module):
@@ -49,31 +53,6 @@ class BaselineNetwork:
         self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
         self.training = False
-
-    def get_f1_score(self, pred_labels, gt_labels):
-        """
-        Compute F1 Score between pred and ground truth labels
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
-        # we want a (Batch_size x 1) tensor
-        f1 = f1.view(-1, 1)
-        return f1
 
     def train(self, loader, ep):
 
@@ -158,21 +137,12 @@ class BaselineNetwork:
         return loss.item(), mean_f1
 
 
-def run_the_model(train_loader, valid_loader):
+def run_the_model(train_loader, valid_loader, path_save: str, use_cuda: bool):
 
     baseline = BaselineNetwork(use_cuda, learning_rate=1e-4, weight_decay=0)
 
-    results_path = dir_path + '/results/'
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
-
-    # Increment a counter so that previous results with the same args will not
-    # be overwritten. Comment out the next four lines if you only want to keep
-    # the most recent results.
-    i = 0
-    while os.path.exists(results_path + str(i) + '.pkl'):
-        i += 1
-    results_path = results_path + str(i)
+    path_results = create_path_that_doesnt_exist(path_save, "results", ".pkl")
+    path_model = create_path_that_doesnt_exist(path_save, "model", ".pth")
 
     results = {'name': 'Baseline_on_1k', 'loss_train': [], 'loss_valid': [], 'f1_valid': []}
 
@@ -190,13 +160,13 @@ def run_the_model(train_loader, valid_loader):
         results['loss_valid'].append(loss_valid)
         results['f1_valid'].append(f1_valid)
 
-        with open(results_path + '.pkl', 'wb') as fout:
+        with open(path_results, 'wb') as fout:
             pickle.dump(results, fout)
 
         if save_model and loss_valid < best_val_valid:
             best_val_valid = loss_valid
             print('--- Saving model at Hamming_Loss = {:.5f} ---'.format(loss_valid))
-            torch.save(baseline.model.state_dict(), results_path + '.pth')
+            torch.save(baseline.model.state_dict(), path_model)
 
     plot_results(results, iou=False)
 
@@ -207,7 +177,7 @@ def strip_classifier(model):
     model.classifier = nn.Sequential(*tmp)
 
 
-def save_features(train_loader, valid_loader):
+def save_features(train_loader, valid_loader, dir_path: str):
     """Save features of the Unary Model code mainly taken from
     https://github.com/cgraber/NLStruct/blob/master/experiments/train_tagging_unary.py"""
 
@@ -254,10 +224,10 @@ def main():
     # Use GPU if it is available
     use_cuda = torch.cuda.is_available()
 
-    train_label_file = dir_path + '/preprocessed/train_labels_1k.pt'
-    val_label_file = dir_path + '/preprocessed/val_labels.pt'
-    train_save_img_file = dir_path + '/preprocessed/train_imgs_1k.pt'
-    val_save_img_file = dir_path + '/preprocessed/val_imgs.pt'
+    train_label_file = os.path.join(PATH_PREPROCESSED, 'train_labels_1k.pt')
+    val_label_file = os.path.join(PATH_PREPROCESSED, 'val_labels.pt')
+    train_save_img_file = os.path.join(PATH_PREPROCESSED, 'train_imgs_1k.pt')
+    val_save_img_file = os.path.join(PATH_PREPROCESSED, 'val_imgs.pt')
     load = False  # True if train_save_img_file is not None else False
     print('Loading training set....')
     train_set = FlickrTaggingDataset(type_dataset, img_dir, save_img_file=train_save_img_file,
@@ -283,11 +253,10 @@ def main():
         pin_memory=use_cuda
     )
 
-    run_the_model(train_loader, valid_loader)
+    run_the_model(train_loader, valid_loader, dir_path)
 
     # save_features(train_loader, valid_loader)
 
 
 if __name__ == "__main__":
     main()
-

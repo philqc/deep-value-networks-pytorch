@@ -12,7 +12,7 @@ import pickle
 from src.visualization_utils import (
     show_grid_imgs, plot_results
 )
-from src.utils import Sampling, SGD
+from src.utils import Sampling, SGD, create_path_that_doesnt_exist
 from .utils import calculate_hamming_loss, plot_hamming_loss
 from .load_flickr import (
     show_pred_labels, inv_normalize, FlickrTaggingDataset, FlickrTaggingDatasetFeatures
@@ -168,7 +168,8 @@ class DeepValueNetwork:
 
         # Paper use SGD for convnet with learning rate = 0.01
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, momentum=momentum, weight_decay=weight_decay)
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
+        #                                  momentum=momentum, weight_decay=weight_decay)
 
         self.shuffle_n_size = shuffle_n_size
 
@@ -179,72 +180,6 @@ class DeepValueNetwork:
             self.get_oracle_value = lambda x, y: self.get_f1_score(x, y)
         else:
             self.get_oracle_value = lambda x, y: self.get_scaled_hamming_loss(x, y)
-
-    def get_f1_score(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score when training.
-        and the discrete F1 when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        # Add epsilon also in numerator !! cuz some images have 0 tags
-        # and then we get 0/0 --> = nan instead of f1=1
-        f1 = (2 * intersect + epsilon) / (intersect + torch.max(epsilon, union))
-        # pdb.set_trace()
-        # we want a (Batch_size x 1) tensor
-        f1 = f1.view(-1, 1)
-        return f1
-
-    def get_scaled_hamming_loss(self, pred_labels, gt_labels):
-        """ Scaled Hamming Loss """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        # Hamming Loss in 0-1
-        loss = torch.sum(torch.abs(gt_labels - pred_labels), dim=1)
-        if self.use_bce:
-            loss /= 24.
-        loss = loss.view(-1, 1)
-        return loss
-
-    def get_ini_labels(self, x, gt_labels=None):
-        """
-        Get the tensor of predicted labels
-        that we will do inference on
-        """
-        y = torch.zeros(x.size()[0], self.label_dim, dtype=torch.float32, device=self.device)
-
-        if gt_labels is not None:
-            # 50% of initialization labels: Start from GT; rest: start from zeros
-            gt_indices = torch.rand(gt_labels.shape[0]).float().to(self.device) > 0.5
-            y[gt_indices] = gt_labels[gt_indices]
-
-        # Set requires_grad=True after in_place operation (changing the indices)
-        y.requires_grad = True
-        return y
 
     def generate_output(self, x, gt_labels=None, ep=0):
         """
@@ -513,56 +448,6 @@ class SPEN:
         # for inference, make sure gradients of convnet don't get accumulated
         self.training = False
 
-    def get_f1_score(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score when training.
-        and the discrete F1 when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        # Add epsilon also in numerator !! cuz some images have 0 tags
-        # and then we get 0/0 --> = nan instead of f1=1
-        f1 = (2 * intersect + epsilon) / (intersect + torch.max(epsilon, union))
-        # pdb.set_trace()
-        # we want a (Batch_size x 1) tensor
-        f1 = f1.view(-1, 1)
-        return f1
-
-    def get_scaled_hamming_loss(self, pred_labels, gt_labels):
-        """ Scaled Hamming Loss """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        # Hamming Loss in 0-1
-        loss = torch.sum(torch.abs(gt_labels - pred_labels), dim=1)
-        if self.use_bce:
-            loss /= 24.
-        loss = loss.view(-1, 1)
-        return loss
-
     def get_ini_labels(self, x, gt_labels=None):
         """
         Get the tensor of predicted labels
@@ -708,7 +593,7 @@ class SPEN:
                 # Max-margin Loss
                 pre_loss = self.loss_fn(pred_labels, targets) - pred_energy + gt_energy
                 # Take the mean over all losses of the mini batch
-                loss = torch.max(pre_loss, torch.zeros(pre_loss.size()).to(self.device))
+                # loss = torch.max(pre_loss, torch.zeros(pre_loss.size()).to(self.device))
                 t_loss += torch.mean(pre_loss).item()
 
                 # round prediction to binary 0/1
@@ -767,31 +652,23 @@ def run_the_model(use_unary, use_features, train_loader, valid_loader, dir_path,
 
     use_dvn = False
     if use_dvn:
-        EnergyNetwork = DeepValueNetwork(use_top_layer, use_bce, use_unary, use_features, use_f1_score, use_cuda,
-                                         mode_sampling, add_second_layer=False, shuffle_n_size=False,
-                                         learning_rate=1e-5, momentum=0, weight_decay=0, inf_lr=10.,
-                                         num_hidden=12, num_pairwise=32, n_steps_inf=20, n_steps_adv=1)
+        energy_network = DeepValueNetwork(use_top_layer, use_bce, use_unary, use_features, use_f1_score, use_cuda,
+                                          mode_sampling, add_second_layer=False, shuffle_n_size=False,
+                                          learning_rate=1e-5, momentum=0, weight_decay=0, inf_lr=10.,
+                                          num_hidden=12, num_pairwise=32, n_steps_inf=20, n_steps_adv=1)
         str_res = 'DVN_Ground_Truth' if mode_sampling == Sampling.GT else 'DVN_Adversarial'
     else:
-        EnergyNetwork = SPEN(use_top_layer, use_bce, use_unary, use_features, use_f1_score, use_cuda,
-                             add_second_layer=False, learning_rate=3e-2, momentum=0, weight_decay=1e-4,
-                             inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16, label_dim=24,
-                             n_steps_inf=30)
+        energy_network = SPEN(use_top_layer, use_bce, use_unary, use_features, use_f1_score, use_cuda,
+                              add_second_layer=False, learning_rate=3e-2, momentum=0, weight_decay=1e-4,
+                              inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16, label_dim=24,
+                              n_steps_inf=30)
         str_res = 'SPEN'
 
     print('Using {}'.format(str_res))
 
-    results_path = dir_path + '/results/'
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
-
-    # Increment a counter so that previous results with the same args will not
-    # be overwritten. Comment out the next four lines if you only want to keep
-    # the most recent results.
-    i = 0
-    while os.path.exists(results_path + str(i) + '.pkl'):
-        i += 1
-    results_path = results_path + str(i)
+    dir_results = os.path.join(dir_path, "results")
+    path_model = create_path_that_doesnt_exist(dir_results, "model", ".pth")
+    path_results = create_path_that_doesnt_exist(dir_results, "results", ".pkl")
 
     results = {'name': str_res, 'loss_train': [],
                'hamming_loss_train': [], 'hamming_loss_valid': [],
@@ -801,11 +678,11 @@ def run_the_model(use_unary, use_features, train_loader, valid_loader, dir_path,
     save_model = False
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(EnergyNetwork.optimizer, step_size=40, gamma=0.25)
+    scheduler = torch.optim.lr_scheduler.StepLR(energy_network.optimizer, step_size=40, gamma=0.25)
 
     for epoch in range(100):
-        loss_train, h_loss_train = EnergyNetwork.train(train_loader, epoch)
-        loss_valid, h_loss_valid, f1_valid = EnergyNetwork.valid(valid_loader, epoch)
+        loss_train, h_loss_train = energy_network.train(train_loader, epoch)
+        loss_valid, h_loss_valid, f1_valid = energy_network.valid(valid_loader, epoch)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
@@ -813,13 +690,13 @@ def run_the_model(use_unary, use_features, train_loader, valid_loader, dir_path,
         results['hamming_loss_train'].append(h_loss_train)
         results['hamming_loss_valid'].append(h_loss_valid)
 
-        with open(results_path + '.pkl', 'wb') as fout:
+        with open(path_results, 'wb') as fout:
             pickle.dump(results, fout)
 
         if epoch > 10 and save_model and h_loss_valid < best_val_valid:
             best_val_valid = h_loss_valid
             print('--- Saving model at Hamming = {:.4f} ---'.format(h_loss_valid))
-            torch.save(EnergyNetwork.model.state_dict(), results_path + '.pth')
+            torch.save(energy_network.model.state_dict(), path_model)
 
     plot_results(results, iou=False)
     plot_hamming_loss(results)

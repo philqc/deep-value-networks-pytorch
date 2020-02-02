@@ -1,9 +1,15 @@
 import arff
 import numpy as np
 from sklearn.metrics import f1_score
+from src.utils import project_root
+import os
 
 
-def get_bibtex(dir_path, split='train'):
+PATH_MODELS_ML_BIB = os.path.join(project_root(), "models", "multilabel_classification")
+PATH_BIBTEX = os.path.join(project_root(), "data", "bibtex")
+
+
+def get_bibtex(dir_path: str, use_train: bool):
     """
     Load the bibtex dataset.
     __author__ = "Michael Gygli, ETH Zurich"
@@ -21,12 +27,11 @@ def get_bibtex(dir_path, split='train'):
     inputs (np.array)
         N x 1839 array in one hot vector format
     """
-    assert split in ['train', 'test']
     feature_idx = 1836
-    if split == 'test':
-        dataset = arff.load(open('%s/bibtex/bibtex-test.arff' % dir_path, 'r'))
+    if use_train:
+        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-train.arff'), 'r'))
     else:
-        dataset = arff.load(open('%s/bibtex/bibtex-train.arff' % dir_path, 'r'))
+        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-test.arff'), 'r'))
 
     data = np.array(dataset['data'], np.int)
 
@@ -34,11 +39,7 @@ def get_bibtex(dir_path, split='train'):
     inputs = data[:, 0:feature_idx]
     txt_labels = [t[0] for t in dataset['attributes'][feature_idx:]]
     txt_inputs = [t[0] for t in dataset['attributes'][:feature_idx]]
-
-    if split == 'train':
-        return labels, inputs, txt_labels, txt_inputs
-    else:
-        return labels, inputs, txt_labels, txt_inputs
+    return labels, inputs, txt_labels, txt_inputs
 
 
 def print_a_sentence_bibtex(x, y, txt_inputs, txt_labels):
@@ -55,10 +56,10 @@ def print_a_sentence_bibtex(x, y, txt_inputs, txt_labels):
             print(txt_labels[i])
 
 
-def normalize_inputs(inputs, dir_path, load):
+def normalize_inputs(inputs, path_save: str, load: bool):
     if load:
-        mean = np.load("%s/mean.npz.npy" % dir_path)
-        std = np.load("%s/std.npz.npy" % dir_path)
+        mean = np.load(os.path.join(path_save, "mean.npz.npy"))
+        std = np.load(os.path.join(path_save, "std.npz.npy"))
     else:
         mean = np.mean(inputs, axis=0).reshape((1, -1))
         std = np.std(inputs, axis=0).reshape((1, -1)) + 10 ** -6
@@ -68,8 +69,8 @@ def normalize_inputs(inputs, dir_path, load):
     train_inputs /= std
 
     if not load:
-        np.save("%s/mean.npz" % dir_path, mean)
-        np.save("%s/std.npz" % dir_path, std)
+        np.save(os.path.join(path_save, "mean.npz"), mean)
+        np.save(os.path.join(path_save, "std.npz"), std)
     return train_inputs
 
 
@@ -78,9 +79,7 @@ def compute_f1_score(labels, outputs):
     Compute the example (total) (macro average) F1 measure
     """
     assert labels.shape == outputs.shape
-
     f1 = []
     for i in range(len(outputs)):
         f1.append(f1_score(labels[i], outputs[i]))
-
     return f1

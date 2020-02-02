@@ -1,162 +1,21 @@
-import threading
-from queue import Queue, Empty
 import time
 import os
-from skimage import io
 import numpy as np
 import torch.nn as nn
 import torch
-from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
-import torchvision.transforms.functional as TF
+from torch.utils.data import DataLoader
 import random
 import pickle
 
-from src.utils import Sampling
-import src.utils as utils
+from src.utils import Sampling, SGD, create_path_that_doesnt_exist
+from src.visualization_utils import (
+    plot_results, show_grid_imgs, plot_gradients, save_grid_imgs
+)
+from src.image_segmentation.utils import average_over_crops, PATH_DATA_WEIZMANN
+from .weizmann_horse_dataset import WeizmannHorseDataset
 
 
 __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
-
-
-# build the dataset, generate the "training tuple"
-class WeizmannHorseDataset(Dataset):
-    """ Weizmann Horse Dataset """
-
-    def __init__(self, img_dir, mask_dir, subset='train', random_mirroring=True, thirty_six_cropping=False):
-        """
-        Args:
-            img_dir(string): Path to the image file (training image)
-            mask_dir(string): Path to the mask file (segmentation result)
-            subset(string): 'train' or 'valid' or 'test'
-        """
-        self.img_dir = img_dir
-        self.mask_dir = mask_dir
-
-        self.img_names = os.listdir(img_dir)
-        self.mask_names = os.listdir(mask_dir)
-
-        self.img_names.sort()
-        self.mask_names.sort()
-
-        if subset == 'test':
-            self.img_names = self.img_names[200:]
-            self.mask_names = self.mask_names[200:]
-        elif subset == 'valid':
-            self.img_names = self.img_names[180:200]
-            self.mask_names = self.mask_names[180:200]
-        else:
-            self.img_names = self.img_names[:180]
-            self.mask_names = self.mask_names[:180]
-
-        self.transform = transforms.Compose([transforms.ToPILImage(),
-                                             transforms.Resize(size=(32, 32))])
-        self.random_mirroring = random_mirroring
-        self.normalize = None
-        self.thirty_six_cropping = thirty_six_cropping
-
-    def __len__(self):
-        return len(self.img_names)
-
-    def __getitem__(self, idx):
-        img_name = os.path.join(self.img_dir, self.img_names[idx])
-        mask_name = os.path.join(self.mask_dir, self.mask_names[idx])
-
-        image = io.imread(img_name)
-        mask = io.imread(mask_name)
-
-        image = self.transform(image)
-
-        # create a channel for mask so as to transform
-        mask = self.transform(np.expand_dims(mask, axis=2))
-
-        if self.thirty_six_cropping:
-            # Use 36 crops averaging for test set
-            input_img = image
-
-            image = utils.thirty_six_crop(image, 24)
-            if self.normalize is not None:
-                transform_test = transforms.Compose(
-                    [transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops])),
-                     transforms.Lambda(lambda crops: torch.stack([self.normalize(crop) for crop in crops]))])
-            else:
-                transform_test = transforms.Compose(
-                    [transforms.Lambda(lambda crops: torch.stack([transforms.ToTensor()(crop) for crop in crops]))])
-
-            image = transform_test(image)
-        else:
-            # Random crop
-            i, j, h, w = transforms.RandomCrop.get_params(image, output_size=(24, 24))
-            image = TF.crop(image, i, j, h, w)
-            mask = TF.crop(mask, i, j, h, w)
-
-            # Random Horizontal flipping
-            if self.random_mirroring and random.random() > 0.50:
-                image = TF.hflip(image)
-                mask = TF.hflip(mask)
-
-            input_img = image
-            image = TF.to_tensor(image)
-            if self.normalize is not None:
-                image = self.normalize(image)
-
-        input_img = TF.to_tensor(input_img)
-        mask = TF.to_tensor(mask)
-
-        # binarize mask again
-        mask = mask >= 0.5
-
-        return input_img, image, mask
-
-    def compute_mean_and_stddev(self):
-        n_images = len(self.img_names)
-        masks, images = [], []
-
-        # ToTensor transforms the images/masks in range [0, 1]
-        transform = transforms.Compose([transforms.ToPILImage(),
-                                        transforms.Resize(size=(32, 32)),
-                                        transforms.ToTensor()])
-
-        for i in range(n_images):
-            mask_name = os.path.join(self.mask_dir, self.mask_names[i])
-            img_name = os.path.join(self.img_dir, self.img_names[i])
-            mask = io.imread(mask_name)
-            image = io.imread(img_name)
-
-            image = transform(image)
-            # create a channel for mask so as to transform
-            mask = transform(np.expand_dims(mask, axis=2))
-
-            # show_img(image, black_and_white=False)
-            # show_img(mask.view(32, 32), black_and_white=True)
-            masks.append(mask)
-            images.append(image)
-
-        # after torch.stack, we should have n_images x 1 x 32 x 32 for mask
-        # and have n_images x 3 x 32 x 32 for images
-        images, masks = torch.stack(images), torch.stack(masks)
-
-        # compute mean and std_dev of images
-        # put the images in n_images x 3 x (32x32) shape
-        images = images.view(images.size(0), images.size(1), -1)
-        mean_imgs = images.mean(2).sum(0) / n_images
-        std_imgs = images.std(2).sum(0) / n_images
-
-        # Find mean_mask for visualization purposes
-        height, width = masks.shape[2], masks.shape[3]
-        # flatten
-        masks = masks.view(n_images, 1, -1)
-        mean_mask = torch.mean(masks, dim=0)
-        # go back to 32 x 32 view
-        mean_mask = mean_mask.view(1, 1, height, width)
-
-        print_mask = False
-        if print_mask:
-            img_to_show = mean_mask.squeeze(0)
-            img_to_show = img_to_show.squeeze(0)
-            utils.show_img(img_to_show, black_and_white=True)
-
-        return mean_imgs, std_imgs, mean_mask
 
 
 class ConvNet(nn.Module):
@@ -220,7 +79,7 @@ class DeepValueNetwork:
             default: 0.01 in DVN paper
         inf_lr : float
             learning rate for the inference procedure
-        mode_sampling: int
+        mode_sampling: str
             Sampling.ADV:
                 Generate adversarial tuples while training.
                 (Usually outperforms stratified sampling and adding ground truth)
@@ -270,60 +129,11 @@ class DeepValueNetwork:
         self.shuffle_n_size = shuffle_n_size
 
         # monitor norm gradients
-        self.norm_gradient_inf = [[] for i in range(n_steps_inf)]
-        self.norm_gradient_adversarial = [[] for i in range(n_steps_inf)]
+        self.norm_gradient_inf = [[] for _ in range(n_steps_inf)]
+        self.norm_gradient_adversarial = [[] for _ in range(n_steps_inf)]
 
         # for inference, make sure gradients of convnet don't get accumulated
         self.training = False
-
-    def get_oracle_value(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the IOU (intersection
-        over union) when training, and the discrete IOU
-        when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
-        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        iou = intersect / torch.max(epsilon, union)
-        # we want a (Batch_size x 1) tensor
-        iou = iou.view(-1, 1)
-        return iou
-
-    def get_ini_labels(self, x, gt_labels=None):
-        """
-        Get the tensor of predicted labels
-        that we will do inference on
-        """
-        y = torch.zeros(x.size()[0], 1, self.label_dim[0], self.label_dim[1],
-                        dtype=torch.float32, device=self.device)
-
-        if gt_labels is not None:
-            # 50% of initialization labels: Start from GT; rest: start from zeros
-            gt_indices = torch.rand(gt_labels.shape[0]).float().to(self.device) > 0.5
-            y[gt_indices] = gt_labels[gt_indices]
-
-        # Set requires_grad=True after in_place operation (changing the indices)
-        y.requires_grad = True
-        return y
 
     def generate_output(self, x, gt_labels=None, ep=0):
         """
@@ -362,7 +172,7 @@ class DeepValueNetwork:
         if self.training:
             self.model.eval()
 
-        optim_inf = utils.SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
+        optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
 
         # print condition to monitor progress
         print_cdn = False  # ep % 10 == 0 and self.new_ep
@@ -379,12 +189,12 @@ class DeepValueNetwork:
                     if print_cdn and i == num_iterations - 1:
                         print('\n value = ', value, '(output, oracle) =', torch.cat((torch.sigmoid(output), oracle), 1))
                         img = x.detach().cpu()
-                        utils.show_grid_imgs(img)
+                        show_grid_imgs(img)
 
                         print('pred_mask (left) real (right) =')
                         mask = y.detach().cpu()
                         real_mask = gt_labels.detach().cpu()
-                        utils.show_grid_imgs(torch.cat((mask, real_mask)))
+                        show_grid_imgs(torch.cat((mask, real_mask)))
                 else:
                     output = self.model(x, y)
                     value = torch.sigmoid(output)
@@ -406,11 +216,11 @@ class DeepValueNetwork:
                     if i == 4 or i == 14 or i == num_iterations - 1:
                         print('-----------INFERENCE(AFTER', i + 1, 'steps)---------------')
                         img = x.detach().cpu()
-                        utils.show_grid_imgs(img)
+                        show_grid_imgs(img)
 
                         print('pred_mask  =')
                         mask = y.detach().cpu()
-                        utils.show_grid_imgs(mask)
+                        show_grid_imgs(mask)
                     if i == num_iterations - 1:
                         img = y.detach().cpu()
                         if self.training:
@@ -423,7 +233,7 @@ class DeepValueNetwork:
                         else:
                             directory = self.dir_valid_img + str(self.filename_valid)
                             self.filename_valid += 1
-                        utils.save_grid_imgs(img, directory)
+                        save_grid_imgs(img, directory)
 
         if self.training:
             self.model.train()
@@ -534,19 +344,19 @@ class DeepValueNetwork:
 
                 pred_labels = pred_labels.view(bs, ncrops, h, w)
 
-                final_pred = utils.average_over_crops(pred_labels, self.device)
+                final_pred = average_over_crops(pred_labels, self.device)
                 oracle = self.get_oracle_value(final_pred, targets)
                 for o in oracle:
                     mean_iou.append(o)
 
                 print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
                 img = raw_inputs.detach().cpu()
-                utils.show_grid_imgs(img)
+                show_grid_imgs(img)
                 mask = final_pred.detach().cpu()
-                utils.show_grid_imgs(mask.float())
+                show_grid_imgs(mask.float())
                 print('Mask binary')
                 bin_mask = mask >= 0.50
-                utils.show_grid_imgs(bin_mask.float())
+                show_grid_imgs(bin_mask.float())
                 print('---------------------------------------')
 
         mean_iou = torch.stack(mean_iou)
@@ -558,95 +368,54 @@ class DeepValueNetwork:
         return mean_iou
 
 
-# create synchronized queue to accumulate the sample:
-def create_sample_queue(model, train_imgs, train_masks, batch_size, num_threads = 5):
-    # need to reconsider the maxsize
-    tuple_queue = Queue()
-    indices_queue = Queue()
-    for idx in np.arange(0, train_imgs.shape[0], batch_size):
-        indices_queue.put(idx)
-
-    # parallel work here
-    def generate():
-        try:
-            while True:
-                # get a batch
-                idx = indices_queue.get_nowait()
-#                print(idx)
-                imgs = train_imgs[idx: min(train_imgs.shape[0], idx + batch_size)]
-                masks = train_masks[idx: min(train_masks.shape[0], idx + batch_size)]
-
-                # generate data (training tuples)
-                # pred_masks, f1_scores = generate_examples(model, imgs, masks, train=True)
-                # tuple_queue.put((imgs, pred_masks, f1_scores))
-                
-        except Empty:
-            # put empty object as a end signal
-            print("empty detect")
-
-    for _ in range(num_threads):
-        thread = threading.Thread(target=generate)
-        thread.start()
-        thread.join()
-    
-    return tuple_queue
-
-
 def run_the_model(train_loader, valid_loader, dir_path, use_cuda, save_model,
                   n_epochs, mode_sampling=Sampling.GT, shuffle_n_size=False, learning_rate=0.01,
                   weight_decay=1e-3, inf_lr=50., momentum_inf=0, n_steps_inf=30, n_steps_adv=1,
                   step_size_scheduler_main=300, gamma_scheduler_main=1.):
 
-    DVN = DeepValueNetwork(dir_path, use_cuda, mode_sampling, shuffle_n_size=shuffle_n_size,
+    dvn = DeepValueNetwork(dir_path, use_cuda, mode_sampling, shuffle_n_size=shuffle_n_size,
                            learning_rate=learning_rate, weight_decay=weight_decay, inf_lr=inf_lr,
                            momentum_inf=momentum_inf, n_steps_inf=n_steps_inf, n_steps_adv=n_steps_adv)
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
-    scheduler = torch.optim.lr_scheduler.StepLR(DVN.optimizer, step_size=step_size_scheduler_main,
+    scheduler = torch.optim.lr_scheduler.StepLR(dvn.optimizer, step_size=step_size_scheduler_main,
                                                 gamma=gamma_scheduler_main)
 
     results = {'name': 'DVN_Whorse', 'loss_train': [],
                'loss_valid': [], 'IOU_valid': [], 'batch_size': train_loader.batch_size,
                'shuffle_n_size': shuffle_n_size, 'learning_rate': learning_rate,
                'weight_decay': weight_decay, 'batch_size_eval': valid_loader.batch_size,
-               'mode_sampling': mode_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf, 'momentum_inf': momentum_inf,
+               'mode_sampling': mode_sampling, 'inf_lr': inf_lr, 'n_steps_inf': n_steps_inf,
+               'momentum_inf': momentum_inf,
                'step_size_scheduler_main': step_size_scheduler_main,
                'gamma_scheduler_main': gamma_scheduler_main, 'n_steps_adv': n_steps_adv}
 
-    results_path = dir_path + '/results/'
-    if not os.path.isdir(results_path):
-        os.makedirs(results_path)
-
-    # Increment a counter so that previous results with the same args will not
-    # be overwritten. Comment out the next four lines if you only want to keep
-    # the most recent results.
-    i = 0
-    while os.path.exists(results_path + str(i) + '.pkl'):
-        i += 1
-    results_path = results_path + str(i)
+    str_model = '_GT_' if mode_sampling == Sampling.GT else '_Adv_'
+    dir_save = os.path.join(dir_path, "results")
+    path_results = create_path_that_doesnt_exist(dir_save, "results", ".pkl")
+    path_model_save = create_path_that_doesnt_exist(dir_save, "model_" + str_model, ".pth")
 
     best_iou_valid = 0
-    str_model = '_GT_' if mode_sampling == Sampling.GT else '_Adv_'
 
     for epoch in range(n_epochs):
-        loss_train = DVN.train(train_loader, epoch)
-        loss_valid, iou_valid = DVN.valid(valid_loader, epoch)
+        loss_train = dvn.train(train_loader, epoch)
+        loss_valid, iou_valid = dvn.valid(valid_loader, epoch)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
         results['IOU_valid'].append(iou_valid)
 
-        with open(results_path + '.pkl', 'wb') as fout:
+        with open(path_results, 'wb') as fout:
             pickle.dump(results, fout)
 
         if epoch > 20 and save_model and iou_valid > best_iou_valid:
             best_iou_valid = iou_valid
             print('--- Saving model at IOU_{:.2f} ---'.format(100 * best_iou_valid))
-            torch.save(DVN.model.state_dict(), results_path + str_model + '.pth')
+            torch.save(dvn.model.state_dict(), path_model_save)
 
-    utils.plot_results(results, iou=True)
-    utils.plot_gradients(DVN.norm_gradient_inf, 'Inference')
-    utils.plot_gradients(DVN.norm_gradient_adversarial, 'Adversarial Examples')
+    plot_results(results, iou=True)
+    plot_gradients(dvn.norm_gradient_inf, 'Inference')
+    plot_gradients(dvn.norm_gradient_adversarial, 'Adversarial Examples')
 
 
 def start():
@@ -708,15 +477,15 @@ def run_test_set():
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    image_dir = dir_path + '/images'
-    mask_dir = dir_path + '/masks'
+    image_dir = os.path.join(PATH_DATA_WEIZMANN, "images")
+    mask_dir = os.path.join(PATH_DATA_WEIZMANN, "masks")
 
-    DVN = DeepValueNetwork(dir_path, use_cuda, learning_rate=1e-4, weight_decay=1e-3,
+    dvn = DeepValueNetwork(dir_path, use_cuda, learning_rate=1e-4, weight_decay=1e-3,
                            inf_lr=5e2, n_steps_inf=30, n_steps_adv=3)
 
-    DVN.model = ConvNet().to(device)
-    DVN.model.load_state_dict(torch.load(dir_path + '/11_Adv_.pth'))
-    DVN.model.eval()
+    dvn.model = ConvNet().to(device)
+    dvn.model.load_state_dict(torch.load(dir_path + '/11_Adv_.pth'))
+    dvn.model.eval()
 
     # Compute IOU single prediction on 24x24 crops and 36 crops averaging on 32x32
     for i in range(2):
@@ -735,15 +504,17 @@ def run_test_set():
         print('-------------------------------------------')
         if i == 0:
             print('Single crop IOU prediction')
-            DVN.valid(test_loader, ep=100)
+            dvn.valid(test_loader, ep=100)
         else:
             print('36 Crops IOU prediction')
-            DVN.test(test_loader)
+            dvn.test(test_loader)
 
 
-if __name__ == "__main__":
+def main():
     start()
-
     # On test set:
     run_test_set()
 
+
+if __name__ == "__main__":
+    main()

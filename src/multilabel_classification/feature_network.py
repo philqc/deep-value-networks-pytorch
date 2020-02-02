@@ -7,7 +7,8 @@ from torch.utils.data.sampler import SubsetRandomSampler
 import numpy as np
 import os
 from src.multilabel_classification.utils import (
-    normalize_inputs, print_a_sentence_bibtex, compute_f1_score, get_bibtex
+    normalize_inputs, print_a_sentence_bibtex, compute_f1_score, get_bibtex,
+    PATH_MODELS_ML_BIB, PATH_BIBTEX
 )
 from src.utils import MyDataset
 from src.visualization_utils import plot_results
@@ -18,6 +19,9 @@ params_baseline = {'epochs': 20, 'optim': 'adam', 'lr': 1e-3,
 # Parameters to do feature extraction for pretraining of SPEN
 params_feature_extraction = {'epochs': 10, 'optim': 'adam', 'lr': 1e-3,
                              'momentum': 0, 'scheduler': 20, 'weight_decay': 0}
+
+FILE_FEATURE_NETWORK = "bibtex_feature_network.pth"
+PATH_FEATURE_NETWORK = os.path.join(PATH_MODELS_ML_BIB, FILE_FEATURE_NETWORK)
 
 
 class FeatureMLP(nn.Module):
@@ -173,11 +177,10 @@ class FeatureNetwork:
         return loss, f1
 
 
-def run_the_model(do_feature_extraction, dir_path, use_cuda):
-
+def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, use_cuda: bool):
     print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
-    train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
+    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=True)
+    train_inputs = normalize_inputs(train_inputs, path_save, load=False)
 
     n_train = int(len(train_inputs) * 0.95)
     indices = list(range(len(train_inputs)))
@@ -207,7 +210,7 @@ def run_the_model(do_feature_extraction, dir_path, use_cuda):
     else:
         params = params_baseline
 
-    F_Net = FeatureNetwork(use_cuda, lr=params['lr'], momentum=params['momentum'],
+    f_net = FeatureNetwork(use_cuda, lr=params['lr'], momentum=params['momentum'],
                            optimizer=params['optim'], weight_decay=params['weight_decay'])
 
     print('train_labels.shape =', train_labels.shape,
@@ -216,13 +219,13 @@ def run_the_model(do_feature_extraction, dir_path, use_cuda):
 
     results = {'name': 'MLP_Baseline', 'loss_train': [], 'loss_valid': [], 'f1_valid': []}
 
-    scheduler = torch.optim.lr_scheduler.StepLR(F_Net.optimizer, step_size=params['scheduler'], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(f_net.optimizer, step_size=params['scheduler'], gamma=0.1)
 
     best_val_found = 0
     # Train for 10 epochs as the INFNET paper
     for epoch in range(params['epochs']):
-        loss_train = F_Net.train(train_loader, epoch)
-        loss_valid, f1_valid = F_Net.valid(valid_loader)
+        loss_train = f_net.train(train_loader, epoch)
+        loss_valid, f1_valid = f_net.valid(valid_loader)
         scheduler.step()
 
         results['loss_train'].append(loss_train)
@@ -231,21 +234,20 @@ def run_the_model(do_feature_extraction, dir_path, use_cuda):
         if f1_valid > best_val_found:
             best_val_found = f1_valid
             print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_val_found))
-            torch.save(F_Net.model.state_dict(), dir_path + '/bibtex_feature_network.pth')
+            torch.save(f_net.model.state_dict(), os.path.join(path_save, FILE_FEATURE_NETWORK))
 
     # Plot results and save the model
     plot_results(results, iou=False)
 
 
-def test_the_model(dir_path, use_cuda, model_path):
-
-    F_Net = FeatureNetwork(use_cuda)
-    F_Net.model.load_state_dict(torch.load(dir_path + model_path))
+def test_the_model(path_data: str, path_save: str, use_cuda):
+    f_net = FeatureNetwork(use_cuda)
+    f_net.model.load_state_dict(torch.load(os.path.join(path_save, FILE_FEATURE_NETWORK)))
 
     # Testing phase
     print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
-    test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
+    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
+    test_inputs = normalize_inputs(test_inputs, path_save, load=True)
     test_data = MyDataset(test_inputs, test_labels)
     test_loader = DataLoader(
         test_data,
@@ -253,23 +255,20 @@ def test_the_model(dir_path, use_cuda, model_path):
         pin_memory=use_cuda
     )
     print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = F_Net.test(test_loader, test_labels)
+    loss_test, f1_test = f_net.test(test_loader, test_labels)
 
 
-if __name__ == "__main__":
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-
+def main():
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
     feature_extraction = True
 
-    run_the_model(feature_extraction, dir_path, use_cuda)
+    run_the_model(feature_extraction, path_data=PATH_BIBTEX,
+                  path_save=PATH_MODELS_ML_BIB, use_cuda=use_cuda)
 
-    test_the_model(dir_path, use_cuda, 'bibtex_feature_network.pth')
-
-
-
+    test_the_model(PATH_BIBTEX, PATH_MODELS_ML_BIB, use_cuda)
 
 
+if __name__ == "__main__":
+    main()

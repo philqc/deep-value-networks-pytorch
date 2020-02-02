@@ -1,5 +1,9 @@
 import numbers
 import torch
+import os
+from src.utils import project_root
+
+PATH_DATA_WEIZMANN = os.path.join(project_root(), "data", "weizmann_horse")
 
 
 def thirty_six_crop(img, size):
@@ -41,3 +45,27 @@ def average_over_crops(pred, device):
     final /= size
     final = final.view(bs, 1, 32, 32)
     return final
+
+
+def get_iou_batch(y_pred, y_true):
+    # extended domain oracle value function
+    # define the oracle function for image segmentation(F1, IOU, or Dice Score) (tensor?)
+    batch_size = y_pred.shape[0]
+
+    scores = torch.zeros(batch_size, 1)
+    for i in range(batch_size):
+        scores[i] = get_iou(y_pred[i], y_true[i])
+
+    return scores
+
+
+def get_iou(y_pred, y_true):
+    # y_pred and y_true are all "torch tensor"
+    y_pred = torch.flatten(y_pred).reshape(1, -1)
+    y_true = torch.flatten(y_true).reshape(1, -1)
+
+    y_concat = torch.cat([y_pred, y_true], 0)
+
+    intersect = torch.sum(torch.min(y_concat, 0)[0]).float()
+    union = torch.sum(torch.max(y_concat, 0)[0]).float()
+    return intersect / max(10 ** -8, union)

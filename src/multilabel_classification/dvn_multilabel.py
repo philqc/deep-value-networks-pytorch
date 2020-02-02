@@ -40,7 +40,7 @@ class EnergyNetwork(nn.Module):
         ----------
         feature_dim : int
             dimensionality of the input features
-            feature_dim = 1836 for bibtex 
+            feature_dim = 1836 for bibtex
         label_dim : int
             dimensionality of the output labels
             label_dim = 159 for bibtex
@@ -54,9 +54,8 @@ class EnergyNetwork(nn.Module):
         super().__init__()
 
         self.non_linearity = non_linearity
-
         self.fc1 = nn.Linear(feature_dim, num_hidden)
-        
+
         if add_second_layer:
             self.fc2 = nn.Linear(num_hidden, num_hidden)
 
@@ -64,15 +63,15 @@ class EnergyNetwork(nn.Module):
             # Eq. 4 in http://www.jmlr.org/proceedings/papers/v48/belanger16.pdf
             # X is Batch_size x num_hidden
             # B is num_hidden x L, so XB gives a Batch_size x L label
-            # and then we multiply by the label and sum over the L labels, 
-            # and we get Batch_size x 1 output  for the local energy 
+            # and then we multiply by the label and sum over the L labels,
+            # and we get Batch_size x 1 output  for the local energy
             self.B = torch.nn.Parameter(torch.empty(num_hidden, label_dim))
             # using same initialization as DVN paper
             torch.nn.init.normal_(self.B, mean=0, std=np.sqrt(2.0 / num_hidden))
         else:
             self.fc2 = nn.Linear(num_hidden, label_dim)
             self.B = None
-        
+
         # Label energy terms, C1/c2  in equation 5 of SPEN paper
         self.C1 = torch.nn.Parameter(torch.empty(label_dim, num_pairwise))
         torch.nn.init.normal_(self.C1, mean=0, std=np.sqrt(2.0 / label_dim))
@@ -84,13 +83,13 @@ class EnergyNetwork(nn.Module):
 
         x = self.non_linearity(self.fc1(x))
         x = self.non_linearity(self.fc2(x))
-    
+
         # Local energy
         if self.B is not None:
-            e_local = torch.mm(x, self.B)          
+            e_local = torch.mm(x, self.B)
         else:
             e_local = x
-            
+
         # element-wise product
         e_local = torch.mul(y, e_local)
         e_local = torch.sum(e_local, dim=1)
@@ -158,50 +157,6 @@ class DeepValueNetwork:
 
         # turn on/off
         self.training = False
-
-    def get_oracle_value(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score when training.
-        and the discrete F1 when validating/testing
-        """
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        f1 = 2 * intersect / (intersect + torch.max(epsilon, union))
-        # we want a (Batch_size x 1) tensor
-        f1 = f1.view(-1, 1)
-        return f1
-
-    def get_ini_labels(self, x, gt_labels=None):
-        """
-        Get the tensor of predicted labels
-        that we will do inference on
-        """
-        y = torch.zeros(x.size()[0], self.label_dim, dtype=torch.float32, device=self.device)
-
-        if gt_labels is not None:
-            # 50%: Start from GT; rest: start from zeros
-            gt_indices = torch.rand(gt_labels.shape[0]).float().to(self.device) > 0.5
-            y[gt_indices] = gt_labels[gt_indices]
-
-        # Set requires_grad=True after in_place operation (changing the indices)
-        y.requires_grad = True
-        return y
 
     def generate_output(self, x, gt_labels):
         """
@@ -335,13 +290,12 @@ class DeepValueNetwork:
 
 
 def run_test_set(mode_sampling):
-
     dir_path = os.path.dirname(os.path.realpath(__file__))
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
     print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
+    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, use_train=False)
     test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
     test_data = MyDataset(test_inputs, test_labels)
     test_loader = DataLoader(
@@ -375,7 +329,7 @@ def run_the_model():
     use_cuda = torch.cuda.is_available()
 
     print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
+    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, use_train=True)
     train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
     train_data = MyDataset(train_inputs, train_labels)
 
@@ -435,13 +389,11 @@ def run_the_model():
     torch.save(DVN.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
 
 
-if __name__ == "__main__":
-
-    #run_the_model()
-
+def main():
+    # run_the_model()
     # Test the pretrained models (Ground Truth and Adversarial)
     run_test_set(mode_sampling=Sampling.ADV)
 
 
-
-
+if __name__ == "__main__":
+    main()

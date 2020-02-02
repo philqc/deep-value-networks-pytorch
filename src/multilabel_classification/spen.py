@@ -9,8 +9,9 @@ import pickle
 from src.multilabel_classification.feature_network import FeatureMLP
 from src.utils import MyDataset, SGD
 from src.multilabel_classification.utils import (
-    normalize_inputs, get_bibtex, compute_f1_score
+    normalize_inputs, get_bibtex, compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX
 )
+from src.multilabel_classification.feature_network import FILE_FEATURE_NETWORK
 from src.visualization_utils import plot_results
 
 
@@ -55,7 +56,6 @@ class EnergyNetwork(nn.Module):
         torch.nn.init.normal_(self.c2, mean=0, std=np.sqrt(2.0 / num_pairwise))
 
     def forward(self, x, y):
-
         # Local energy
         e_local = torch.mm(x, self.B)
         # element-wise product
@@ -98,7 +98,7 @@ class SPEN:
         # From SPEN paper, for training we used SGD + momentum
         # with momentum = 0.9, and learning rate + weight decay
         # are decided using the validation set
-        #self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
+        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
         #                                 momentum=0.9, weight_decay=weight_decay)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5,
                                           weight_decay=weight_decay)
@@ -234,14 +234,13 @@ class SPEN:
         return loss.item(), mean_f1
 
 
-def run_test_set(dir_path, path_feature_extractor):
-
+def run_test_set(path_data: str, path_save: str, path_feature_extractor: str):
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
     print('Loading Test set...')
-    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'test')
-    test_inputs = normalize_inputs(test_inputs, dir_path, load=True)
+    test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
+    test_inputs = normalize_inputs(test_inputs, path_save, load=True)
     test_data = MyDataset(test_inputs, test_labels)
     test_loader = DataLoader(
         test_data,
@@ -249,22 +248,21 @@ def run_test_set(dir_path, path_feature_extractor):
         pin_memory=use_cuda
     )
 
-    Spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
+    spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 
-    Spen.model.load_state_dict(torch.load('Spen_bibtex.pth'))
+    spen.model.load_state_dict(torch.load('Spen_bibtex.pth'))
 
     print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = Spen.valid(test_loader, test_set=True)
+    loss_test, f1_test = spen.valid(test_loader, test_set=True)
 
 
-def run_the_model(dir_path, path_feature_extractor):
-
+def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
     print('Loading the training set...')
-    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(dir_path, 'train')
-    train_inputs = normalize_inputs(train_inputs, dir_path, load=False)
+    train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=True)
+    train_inputs = normalize_inputs(train_inputs, path_save, load=False)
     train_data = MyDataset(train_inputs, train_labels)
 
     n_train = int(len(train_inputs) * 0.95)
@@ -285,19 +283,19 @@ def run_the_model(dir_path, path_feature_extractor):
 
     print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
 
-    Spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
+    spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 
     results = {'name': 'SPEN_bibtex', 'loss_train': [],
                'loss_valid': [], 'f1_valid': []}
 
-    save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
+    save_results_file = os.path.join(path_save, results['name'] + '.pkl')
 
-    scheduler = torch.optim.lr_scheduler.StepLR(Spen.optimizer, step_size=10, gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(spen.optimizer, step_size=10, gamma=0.1)
 
     best_f1_valid = 0
     for epoch in range(25):
-        loss_train = Spen.train(train_loader, epoch)
-        loss_valid, f1_valid = Spen.valid(valid_loader)
+        loss_train = spen.train(train_loader, epoch)
+        loss_valid, f1_valid = spen.valid(valid_loader)
         scheduler.step()
         results['loss_train'].append(loss_train)
         results['loss_valid'].append(loss_valid)
@@ -310,25 +308,18 @@ def run_the_model(dir_path, path_feature_extractor):
             best_f1_valid = f1_valid
             if epoch > 0:
                 print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_f1_valid))
-                torch.save(Spen.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+                torch.save(spen.model.state_dict(), os.path.join(path_save, results['name'] + '.pth'))
 
     plot_results(results, False)
 
 
+def main():
+    path_feature_extractor = os.path.join(PATH_MODELS_ML_BIB, FILE_FEATURE_NETWORK)
+
+    run_the_model(PATH_BIBTEX, PATH_MODELS_ML_BIB, path_feature_extractor)
+
+    # run_test_set(dir_path, path_feature_extractor)
+
+
 if __name__ == "__main__":
-
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-    path_feature_extractor = dir_path + '/bibtex_feature_network.pth'
-
-    #run_the_model(dir_path, path_feature_extractor)
-
-    #run_test_set(dir_path, path_feature_extractor)
-
-
-
-
-
-
-
-
-
+    main()
