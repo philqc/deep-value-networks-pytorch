@@ -11,21 +11,47 @@ class DeepValueNetwork(BaseModel):
     def __init__(self, torch_model, metric_optimize: str, use_cuda: bool, mode_sampling: str, optim: str,
                  learning_rate: float, weight_decay: float, inf_lr: float, n_steps_inf: int,
                  label_dim: Union[int, Tuple[int]], loss_fn: str):
-        super().__init__(metric_optimize, use_cuda, label_dim)
-
-        self.model = torch_model.to(self.device)
 
         self.mode_sampling = mode_sampling
         if self.mode_sampling == Sampling.STRAT:
-            raise ValueError('Stratified sampling is not yet implemented!')
+            raise NotImplementedError('Stratified sampling is not yet implemented!')
+        elif self.mode_sampling in [Sampling.GT, Sampling.ADV]:
+            print(f'Using {self.mode_sampling} Sampling')
+        else:
+            raise ValueError(f'Invalid sampling strategy = {self.mode_sampling}')
 
-        if self.loss_fn.lower() == "bce":
+        self.use_hamming_metric = False
+        if metric_optimize.lower() == "f1":
+            self.score_str = "F1"
+            self.oracle_value = lambda x, y: self._f1_score(x, y)
+        elif metric_optimize.lower() == "hamming":
+            self.score_str = "Hamming"
+            self.use_hamming_metric = True
+            self.oracle_value = lambda x, y: self._scaled_hamming_loss(x, y)
+        elif metric_optimize.lower() == "iou":
+            self.score_str = "IOU"
+            self.oracle_value = lambda x, y: self._iou_score(x, y)
+        else:
+            raise ValueError(f"Invalid metric_optimize provided = {metric_optimize}")
+
+        if loss_fn.lower() == "bce":
             self.loss_fn = torch.nn.BCEWithLogitsLoss()
-        elif self.loss_fn.lower() == "mse":
+            self.use_bce = True
+        elif loss_fn.lower() == "mse":
             self.loss_fn = torch.nn.MSELoss()
+            self.use_bce = False
         else:
             raise ValueError(f"Invalid loss_fn provided = {loss_fn}")
 
+        self.inf_lr = inf_lr
+        self.n_steps_inf = n_steps_inf
+        self.new_ep = True
+        self.device = torch.device("cuda" if use_cuda else "cpu")
+        self.label_dim = label_dim
+        self.training = False
+
+        # Model and optimizer
+        self.model = torch_model.to(self.device)
         if optim.lower() == 'sgd':
             self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         elif optim.lower() == 'adam':
@@ -33,17 +59,12 @@ class DeepValueNetwork(BaseModel):
         else:
             raise ValueError(f'Invalid optimizer provided: {optim}')
 
-        self.inf_lr = inf_lr
-        # monitor norm gradients
-        self.norm_gradient_inf = [[] for _ in range(n_steps_inf)]
-        self.norm_gradient_adversarial = [[] for _ in range(n_steps_inf)]
-
     @abstractmethod
     def generate_output(self, x, gt_labels):
         pass
 
     def _get_tensor_init_labels(self, x):
-        if len(self.label_dim) == 2:
+        if isinstance(self.label_dim, Tuple):
             # image or other 2D input
             return torch.zeros(x.size()[0], 1, self.label_dim[0], self.label_dim[1],
                                dtype=torch.float32, device=self.device)
@@ -67,40 +88,103 @@ class DeepValueNetwork(BaseModel):
         y.requires_grad = True
         return y
 
-    def inference(self, x, y, gt_labels=None, num_iterations=20):
+    def _adjust_labels(self, pred_labels, gt_labels):
+        if pred_labels.shape != gt_labels.shape:
+            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
 
-        if self.training:
-            self.model.eval()
+        if not self.training:
+            # No relaxation, 0-1 only
+            pred_labels = torch.where(pred_labels >= 0.5,
+                                      torch.ones(1).to(self.device),
+                                      torch.zeros(1).to(self.device))
+            pred_labels = pred_labels.float()
+        return pred_labels, gt_labels
 
-        optim_inf = SGD(y, lr=self.inf_lr, momentum=0)
+    def _f1_score(self, pred_labels, gt_labels):
+        """
+        Compute the ground truth value, i.e. v*(y, y*)
+        of some predicted labels, where v*(y, y*)
+        is the relaxed version of the F1 Score when training.
+        and the discrete F1 when validating/testing
+        """
+        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
 
-        with torch.enable_grad():
+        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
+        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
 
-            for i in range(num_iterations):
+        # for numerical stability
+        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
 
-                if gt_labels is not None:  # Adversarial
-                    output = self.model(x, y)
-                    oracle = self.oracle_value(y, gt_labels)
-                    # this is the BCE loss with logits
-                    value = self.loss_fn(output, oracle)
-                else:
-                    output = self.model(x, y)
-                    value = torch.sigmoid(output)
+        # Add epsilon also in numerator since some images have 0 tags
+        # and then we get 0/0 --> = nan instead of f1=1
+        f1 = (2 * intersect + epsilon) / (intersect + torch.max(epsilon, union))
+        # we want a (Batch_size x 1) tensor
+        f1 = f1.view(-1, 1)
+        return f1
 
-                grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value), only_inputs=True)
+    def _iou_score(self, pred_labels, gt_labels):
+        """
+        Compute the ground truth value, i.e. v*(y, y*)
+        of some predicted labels, where v*(y, y*)
+        is the relaxed version of the IOU (intersection
+        over union) when training, and the discrete IOU
+        when validating/testing
+        """
+        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
 
-                y_grad = grad[0].detach()
-                y = y + optim_inf.update(y_grad)
-                # Project back to the valid range
-                y = torch.clamp(y, 0, 1)
+        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
+        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
 
-                if gt_labels is not None:  # Adversarial
-                    self.norm_gradient_adversarial[i].append(y_grad.norm())
-                else:
-                    self.norm_gradient_inf[i].append(y_grad.norm())
+        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
+        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
 
-        if self.training:
-            self.model.train()
+        # for numerical stability
+        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
+
+        iou = intersect / torch.max(epsilon, union)
+        # we want a (Batch_size x 1) tensor
+        iou = iou.view(-1, 1)
+        return iou
+
+    def _scaled_hamming_loss(self, pred_labels, gt_labels):
+        """ Scaled Hamming Loss """
+        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
+        # Hamming Loss in 0-1
+        loss = torch.sum(torch.abs(gt_labels - pred_labels), dim=1)
+        if self.use_bce:
+            # TODO: Change this constant
+            loss /= 24.
+        loss = loss.view(-1, 1)
+        return loss
+
+    def _loop_inference(self, gt_labels, x, y, optim_inf) -> torch.Tensor:
+        if gt_labels is not None:  # Adversarial
+            output = self.model(x, y)
+            oracle = self.oracle_value(y, gt_labels)
+            # this is the BCE loss with logits
+            value = self.loss_fn(output, oracle)
+        else:
+            output = self.model(x, y)
+            value = torch.sigmoid(output)
+
+        grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value), only_inputs=True)
+
+        y_grad = grad[0].detach()
+
+        if gt_labels is None and self.use_hamming_metric:
+            # We want to reduce !! the Hamming loss in this case
+            y = y - optim_inf.update(y_grad)
+        else:
+            y = y + optim_inf.update(y_grad)
+
+        y = y + optim_inf.update(y_grad)
+        # Project back to the valid range
+        y = torch.clamp(y, 0, 1)
+        return y
+
+    @abstractmethod
+    def inference(self, x, y, gt_labels=None, n_steps=20):
+        pass
 
     def train(self, loader):
 
@@ -122,6 +206,11 @@ class DeepValueNetwork(BaseModel):
             output = self.model(inputs, pred_labels)
             oracle = self.oracle_value(pred_labels, targets)
             loss = self.loss_fn(output, oracle)
+
+            if torch.isnan(loss):
+                print('Loss has NaN! Loss={:.5f}'.format(loss.item()))
+                raise ValueError('Loss has Nan')
+
             t_loss += loss.item()
 
             loss.backward()
@@ -147,10 +236,10 @@ class DeepValueNetwork(BaseModel):
         self.training = False
         self.new_ep = True
         loss, t_size = 0, 0
-        mean_iou = []
+        mean_oracle = []
 
         with torch.no_grad():
-            for (raw_inputs, inputs, targets) in loader:
+            for (inputs, targets) in loader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
@@ -161,16 +250,20 @@ class DeepValueNetwork(BaseModel):
 
                 loss += self.loss_fn(output, oracle)
                 for o in oracle:
-                    mean_iou.append(o)
+                    mean_oracle.append(o)
                 self.new_ep = False
 
-        mean_iou = torch.stack(mean_iou)
-        mean_iou = torch.mean(mean_iou)
-        mean_iou = mean_iou.cpu().numpy()
+        mean_oracle = torch.stack(mean_oracle)
+        mean_oracle = torch.mean(mean_oracle)
+        mean_oracle = mean_oracle.cpu().numpy()
         loss /= t_size
 
         print('Validation: Loss = {:.5f}; Pred_{} = {:.2f}%, Real_{} = {:.2f}%'
               ''.format(loss.item(), self.score_str, 100 * torch.sigmoid(output).mean(),
-                        self.score_str, 100 * mean_iou))
+                        self.score_str, 100 * mean_oracle))
 
-        return loss.item(), mean_iou
+        return loss.item(), mean_oracle
+
+    @abstractmethod
+    def test(self, loader):
+        pass

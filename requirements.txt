@@ -5,6 +5,6 @@ torchvision===0.5.0
 torchsummary
 Pillow
 scikit-image
-arff
+liac-arff
 flake8
 mypy

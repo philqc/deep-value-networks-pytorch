@@ -1,121 +1,29 @@
 import time
-import torchvision.models
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import random
 import os
 import pickle
 
-from src.visualization_utils import (
-    show_grid_imgs, plot_results
-)
+from src.model.deep_value_network import DeepValueNetwork
+from src.visualization_utils import show_grid_imgs, plot_results
 from src.utils import Sampling, SGD, create_path_that_doesnt_exist
 from .utils import calculate_hamming_loss, plot_hamming_loss
 from .load_flickr import (
     show_pred_labels, inv_normalize, FlickrTaggingDataset, FlickrTaggingDatasetFeatures
 )
+from .model.top_layer import TopLayer
+from .model.conv_net import ConvNet
 
 
-class TopLayer(nn.Module):
-    """ TopLayer from Graber & al. 2018:
-    Deep Structured Prediction with Nonlinear Output Transformations
-    """
-    def __init__(self, label_dim):
-        super().__init__()
-        self.fc1 = nn.Linear(label_dim, 1152)
-        self.fc2 = nn.Linear(1152, 1)
+class DVNImgTagging(DeepValueNetwork):
 
-    def forward(self, y):
-        y = F.hardtanh(self.fc1(y))
-        y = self.fc2(y)
-        return y
-
-
-class ConvNet(nn.Module):
-    def __init__(self, use_unary, use_features, label_dim, num_hidden, num_pairwise,
-                 add_second_layer, non_linearity=nn.Hardtanh()):
-        super().__init__()
-
-        self.non_linearity = non_linearity
-        self.top = TopLayer(label_dim)
-        if use_features:
-            if add_second_layer:
-                self.unary_model = nn.Linear(4096, num_hidden)
-                self.B = torch.nn.Parameter(torch.empty(num_hidden, label_dim))
-                # using same initialization as DVN paper
-                # torch.nn.init.normal_(self.B, mean=0, std=np.sqrt(2.0 / num_hidden))
-            else:
-                self.unary_model = nn.Linear(4096, label_dim)
-                self.B = None
-        elif use_unary:
-            if add_second_layer:
-                self.unary_model = nn.Linear(label_dim, num_hidden)
-                self.B = torch.nn.Parameter(torch.empty(num_hidden, label_dim))
-                # using same initialization as DVN paper
-                torch.nn.init.normal_(self.B, mean=0, std=np.sqrt(2.0 / num_hidden))
-            else:
-                self.unary_model = None
-                self.B = None
-        else:
-            # Load pretrained AlexNet on ImageNet
-            self.unary_model = torchvision.models.alexnet(pretrained=True)
-
-            # Replace the last FC layer
-            tmp = list(self.unary_model.classifier)
-
-            if add_second_layer:
-                tmp[-1] = nn.Linear(4096, num_hidden)
-
-                self.B = torch.nn.Parameter(torch.empty(num_hidden, label_dim))
-                # using same initialization as DVN paper
-                torch.nn.init.normal_(self.B, mean=0, std=np.sqrt(2.0 / num_hidden))
-            else:
-                tmp[-1] = nn.Linear(4096, label_dim)
-                self.B = None
-            self.unary_model.classifier = nn.Sequential(*tmp)
-
-        # Label energy terms, C1/c2  in equation 5 of SPEN paper
-        self.C1 = torch.nn.Parameter(torch.empty(label_dim, num_pairwise))
-        torch.nn.init.normal_(self.C1, mean=0, std=np.sqrt(2.0 / label_dim))
-
-        self.c2 = torch.nn.Parameter(torch.empty(num_pairwise, 1))
-        torch.nn.init.normal_(self.c2, mean=0, std=np.sqrt(2.0 / num_pairwise))
-
-    def forward(self, x, y):
-
-        # First, send image through AlexNet if not using features
-        # else use directly 4096 features computed on Unary model
-        if self.unary_model is not None:
-            x = self.unary_model(x)
-
-        # Local energy
-        if self.B is not None:
-            e_local = self.non_linearity(x)
-            e_local = torch.mm(e_local, self.B)
-        else:
-            e_local = x
-        # element-wise product
-        e_local = torch.mul(y, e_local)
-        e_local = torch.sum(e_local, dim=1)
-        e_local = e_local.view(e_local.size()[0], 1)
-
-        # Label energy
-        e_label = self.top(y)
-        # e_label = self.non_linearity(torch.mm(y, self.C1))
-        # e_label = torch.mm(e_label, self.c2)
-        e_global = torch.add(e_label, e_local)
-        return e_global
-
-
-class DeepValueNetwork:
-
-    def __init__(self, use_top_layer, use_bce, use_unary, use_features, use_f1_score, use_cuda,
-                 mode_sampling=Sampling.GT,
-                 add_second_layer=False, learning_rate=0.01, momentum=0, weight_decay=1e-4, shuffle_n_size=False,
-                 inf_lr=0.50, num_hidden=48, num_pairwise=32, label_dim=24, n_steps_inf=30, n_steps_adv=1):
+    def __init__(self, use_top_layer, use_unary, use_features, use_f1_score, use_cuda,
+                 metric_optimize: str, optim: str, loss_fn: str, mode_sampling=Sampling.GT, add_second_layer=False,
+                 learning_rate=0.01, momentum=0, weight_decay=1e-4, shuffle_n_size=False, inf_lr=0.50, num_hidden=48,
+                 num_pairwise=32, label_dim=24, n_steps_inf=30, n_steps_adv=1):
         """
         Parameters
         ----------
@@ -126,7 +34,7 @@ class DeepValueNetwork:
             default: 0.01 in DVN paper
         inf_lr : float
             learning rate for the inference procedure
-        mode_sampling: int
+        mode_sampling: str
             Sampling.ADV:
                 Generate adversarial tuples while training.
                 (Usually outperforms stratified sampling and adding ground truth)
@@ -136,52 +44,24 @@ class DeepValueNetwork:
             Sampling.GT:
                 Simply add the ground truth outputs y* with some probably p while training.
         """
+        # Deep Value Network is just a ConvNet
+        model = ConvNet(use_unary, use_features, label_dim, num_hidden,
+                        num_pairwise, add_second_layer)
 
-        self.device = torch.device("cuda" if use_cuda else "cpu")
+        super().__init__(model, metric_optimize, use_cuda, mode_sampling, optim, learning_rate, weight_decay,
+                         inf_lr, n_steps_inf, label_dim, loss_fn)
 
-        self.mode_sampling = mode_sampling
-        if self.mode_sampling == Sampling.STRAT:
-            raise ValueError('Stratified sampling is not yet implemented!')
-
-        self.label_dim = label_dim
         self.use_features = use_features
         self.use_unary = use_unary
         self.use_f1_score = use_f1_score
-        self.use_bce = use_bce
         self.use_top_layer = use_top_layer
 
         # Inference hyperparameters
         self.n_steps_adv = n_steps_adv
-        self.n_steps_inf = n_steps_inf
-        self.inf_lr = inf_lr
-        self.new_ep = True
-        ################################
-
-        # Deep Value Network is just a ConvNet
-        self.model = ConvNet(use_unary, use_features, label_dim, num_hidden,
-                             num_pairwise, add_second_layer).to(self.device)
-
-        if self.use_bce:
-            self.loss_fn = nn.BCEWithLogitsLoss()
-        else:
-            self.loss_fn = nn.MSELoss()
-
-        # Paper use SGD for convnet with learning rate = 0.01
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
-        #                                  momentum=momentum, weight_decay=weight_decay)
 
         self.shuffle_n_size = shuffle_n_size
 
-        # for inference, make sure gradients of convnet don't get accumulated
-        self.training = False
-
-        if self.use_f1_score:
-            self.get_oracle_value = lambda x, y: self.get_f1_score(x, y)
-        else:
-            self.get_oracle_value = lambda x, y: self.get_scaled_hamming_loss(x, y)
-
-    def generate_output(self, x, gt_labels=None, ep=0):
+    def generate_output(self, x, gt_labels=None):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different
@@ -191,13 +71,12 @@ class DeepValueNetwork:
         2) Generating adversarial tuples
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
-
         using_inference = False
         if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             # n_steps = random.randint(1, self.n_steps_adv)
-            pred_labels = self.inference(x, init_labels, self.n_steps_adv, gt_labels=gt_labels, ep=ep)
+            pred_labels = self.inference(x, init_labels, n_steps=self.n_steps_adv, gt_labels=gt_labels)
         elif self.mode_sampling == Sampling.GT and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
@@ -210,54 +89,29 @@ class DeepValueNetwork:
             else:
                 n_steps = self.n_steps_inf
 
-            pred_labels = self.inference(x, init_labels, n_steps, ep=ep)
+            pred_labels = self.inference(x, init_labels, n_steps=n_steps)
 
         return pred_labels.detach().clone(), using_inference
 
-    def inference(self, x, y_old, num_iterations, gt_labels=None, ep=0):
+    def inference(self, x, y, gt_labels=None, n_steps=20):
 
         if self.training:
             self.model.eval()
 
-        y = y_old.detach().clone()
+        y = y.detach().clone()
         y.requires_grad = True
         optim_inf = SGD(y, lr=self.inf_lr)
 
         with torch.enable_grad():
-            for i in range(num_iterations):
-
-                if gt_labels is not None:  # Adversarial
-                    output = self.model(x, y)
-                    oracle = self.get_oracle_value(y, gt_labels)
-                    value = self.loss_fn(output, oracle)
-                else:
-                    output = self.model(x, y)
-                    value = torch.sigmoid(output) if self.use_bce else output
-
-                grad = torch.autograd.grad(value, y, grad_outputs=torch.ones_like(value), only_inputs=True)
-
-                y_grad = grad[0].detach()
-
-                if gt_labels is not None:
-                    y = y + optim_inf.update(y_grad)
-                else:
-                    if self.use_f1_score:
-                        y = y + optim_inf.update(y_grad)
-                    else:  # We want to reduce !! the Hamming loss in this case
-                        y = y - optim_inf.update(y_grad)
-
-                # Project back to the valid range
-                y = torch.clamp(y, 0, 1)
-
-                # if (ep == 5 or ep == 10) and self.new_ep and (i == 10 or i == 15):
-                #    pdb.set_trace()
+            for i in range(n_steps):
+                self._loop_inference(gt_labels, x, y, optim_inf)
 
         if self.training:
             self.model.train()
 
         return y
 
-    def train(self, loader, ep):
+    def train(self, loader):
 
         self.model.train()
         self.training = True
@@ -274,9 +128,9 @@ class DeepValueNetwork:
 
             self.model.zero_grad()
 
-            pred_labels, using_inference = self.generate_output(inputs, targets, ep)
+            pred_labels, using_inference = self.generate_output(inputs, targets)
             output = self.model(inputs, pred_labels)
-            oracle = self.get_oracle_value(pred_labels, targets)
+            oracle = self.oracle_value(pred_labels, targets)
             loss = self.loss_fn(output, oracle)
 
             if using_inference:
@@ -302,18 +156,18 @@ class DeepValueNetwork:
                 print_output = torch.sigmoid(output) if self.use_bce else output
 
                 if self.use_f1_score:
-                    print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
+                    print('\rTraining: [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
                           'Avg_Loss = {:.5f}; Hamming_Loss = {:.4f}; Pred_F1 = {:.2f}%; Real_F1 = {:.2f}%'
-                          ''.format(ep, t_size, n_train, 100 * t_size / n_train,
+                          ''.format(t_size, n_train, 100 * t_size / n_train,
                                     (n_train / t_size) * (time.time() - time_start), t_loss / inf_size,
                                     hamming_loss / inf_size, 100 * print_output.mean(), 100 * oracle.mean()),
                           end='')
                 else:
                     scaled_out = 24 * print_output if self.use_bce else print_output
                     scale_oracle = 24 * oracle if self.use_bce else oracle
-                    print('\rTraining Epoch {} [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
+                    print('\rTraining: [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
                           'Avg_Loss = {:.5f}; Avg_H_Loss = {:.4f}; Pred_H = {:.2f}; Real_H = {:.2f}'
-                          ''.format(ep, t_size, n_train, 100 * t_size / n_train,
+                          ''.format(t_size, n_train, 100 * t_size / n_train,
                                     (n_train / t_size) * (time.time() - time_start), t_loss / inf_size,
                                     hamming_loss / inf_size, scaled_out.mean(), scale_oracle.mean()),
                           end='')
@@ -326,7 +180,7 @@ class DeepValueNetwork:
         print('')
         return t_loss, hamming_loss
 
-    def valid(self, loader, ep):
+    def valid(self, loader):
 
         self.model.eval()
         self.training = False
@@ -341,10 +195,10 @@ class DeepValueNetwork:
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels, _ = self.generate_output(inputs, gt_labels=None, ep=ep)
+                pred_labels, _ = self.generate_output(inputs, gt_labels=None)
                 output = self.model(inputs, pred_labels)
 
-                oracle = self.get_oracle_value(pred_labels, targets)
+                oracle = self.oracle_value(pred_labels, targets)
 
                 if self.use_f1_score:
                     hamming_loss += calculate_hamming_loss(pred_labels, targets)
@@ -355,12 +209,11 @@ class DeepValueNetwork:
                         hamming_loss += oracle.sum()
 
                 loss += self.loss_fn(output, oracle)
-
                 if self.use_f1_score:
                     for o in oracle:
                         mean_f1.append(o)
                 else:
-                    f1 = self.get_f1_score(pred_labels, targets)
+                    f1 = self._f1_score(pred_labels, targets)
                     for f in f1:
                         mean_f1.append(f)
                 self.new_ep = False
@@ -459,7 +312,7 @@ class SPEN:
         y.requires_grad = True
         return y
 
-    def inference(self, x, gt_labels, num_iterations):
+    def inference(self, x, gt_labels, n_steps=20):
 
         if self.training:
             self.model.eval()
@@ -474,7 +327,7 @@ class SPEN:
         optim_inf = SGD(y_pred, lr=self.inf_lr, momentum=self.momentum_inf)
 
         with torch.enable_grad():
-            for i in range(num_iterations):
+            for i in range(n_steps):
 
                 if self.use_top_layer:
                     pred_energy = self.model(y_pred)

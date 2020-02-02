@@ -9,7 +9,7 @@ from typing import Tuple
 
 from src.utils import project_root, MyDataset
 
-PATH_MODELS_ML_BIB = os.path.join(project_root(), "models", "multilabel_classification")
+PATH_MODELS_ML_BIB = os.path.join(project_root(), "saved_results", "bibtex")
 PATH_BIBTEX = os.path.join(project_root(), "data", "bibtex")
 
 
@@ -33,9 +33,9 @@ def get_bibtex(dir_path: str, use_train: bool):
     """
     feature_idx = 1836
     if use_train:
-        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-train.arff'), 'r'))
+        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-train.arff')), "r")
     else:
-        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-test.arff'), 'r'))
+        dataset = arff.load(open(os.path.join(dir_path, 'bibtex-test.arff')), "r")
 
     data = np.array(dataset['data'], np.int)
 
@@ -56,7 +56,7 @@ def load_training_set_bibtex(path_data: str, path_save: str, use_cuda: bool, bat
 
     train_labels, train_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=True)
     if norm_inputs:
-        train_inputs = normalize_inputs(train_inputs, path_save, load=False)
+        train_inputs = normalize_inputs(train_inputs, path_save)
     train_data = MyDataset(train_inputs, train_labels)
 
     n_train = int(len(train_inputs) * train_valid_ratio)
@@ -85,7 +85,7 @@ def load_training_set_bibtex(path_data: str, path_save: str, use_cuda: bool, bat
 def load_test_set_bibtex(path_data: str, path_save: str, use_cuda: bool) -> DataLoader:
     print('Loading Test set...')
     test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
-    test_inputs = normalize_inputs(test_inputs, path_save, load=True)
+    test_inputs = normalize_inputs(test_inputs, path_save)
     test_data = MyDataset(test_inputs, test_labels)
     test_loader = DataLoader(
         test_data,
@@ -109,21 +109,21 @@ def print_a_sentence_bibtex(x, y, txt_inputs, txt_labels):
             print(txt_labels[i])
 
 
-def normalize_inputs(inputs, path_save: str, load: bool):
-    if load:
+def normalize_inputs(inputs, path_save: str):
+    if os.path.exists(os.path.join(path_save, "mean.npz.npy")) \
+            and os.path.exists(os.path.join(path_save, "std.npz.npy")):
+        # Load if exists
         mean = np.load(os.path.join(path_save, "mean.npz.npy"))
         std = np.load(os.path.join(path_save, "std.npz.npy"))
     else:
         mean = np.mean(inputs, axis=0).reshape((1, -1))
         std = np.std(inputs, axis=0).reshape((1, -1)) + 10 ** -6
+        np.save(os.path.join(path_save, "mean.npz"), mean)
+        np.save(os.path.join(path_save, "std.npz"), std)
 
     train_inputs = inputs.astype(float)
     train_inputs -= mean
     train_inputs /= std
-
-    if not load:
-        np.save(os.path.join(path_save, "mean.npz"), mean)
-        np.save(os.path.join(path_save, "std.npz"), std)
     return train_inputs
 
 

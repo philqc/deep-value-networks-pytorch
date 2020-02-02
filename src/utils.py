@@ -1,47 +1,13 @@
 from torch.utils.data import Dataset
 import torch
-from enum import Enum
 from pathlib import Path
 import os
 
 
-class Sampling(Enum):
+class Sampling:
     GT = "Ground_Truth"
     ADV = "Adversarial"
     STRAT = "Stratified"
-
-
-class Adam:
-    def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-8):
-        if not 0.0 <= lr:
-            raise ValueError("Invalid learning rate: {}".format(lr))
-        if not 0.0 <= eps:
-            raise ValueError("Invalid epsilon value: {}".format(eps))
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-
-        self.v = torch.zeros_like(params)
-        self.m = torch.zeros_like(params)
-        self.betas = betas
-        self.lr = lr
-        self.eps = eps
-        self.t = 0
-
-    def update(self, gradients):
-        # update time step
-        self.t += 1
-
-        self.m = self.betas[0] * self.m + (1 - self.betas[0]) * gradients
-        self.v = self.betas[1] * self.v + (1 - self.betas[1]) * (gradients ** 2)
-
-        # Bias corrected first and second moment estimates
-        mean = self.m / (1 - self.betas[0] ** self.t)
-        variance = self.v / (1 - self.betas[1] ** self.t)
-
-        update = self.lr * mean / (torch.sqrt(variance) + self.eps)
-        return update
 
 
 class SGD:

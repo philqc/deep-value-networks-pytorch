@@ -6,9 +6,9 @@ import pickle
 
 from src.model.deep_value_network import DeepValueNetwork
 from src.visualization_utils import plot_results
-from src.utils import Sampling
+from src.utils import Sampling, SGD
 from src.multilabel_classification.utils import (
-   load_training_set_bibtex, load_test_set_bibtex
+   load_training_set_bibtex, load_test_set_bibtex, PATH_BIBTEX, PATH_MODELS_ML_BIB
 )
 
 # Optimal parameters for Adversarial sampling from Gygli
@@ -101,7 +101,6 @@ class EnergyNetwork(nn.Module):
 
 
 class DVNMultiLabel(DeepValueNetwork):
-
     def __init__(self, use_cuda, metric_optimize: str, n_steps_inf: int, loss_fn: str, mode_sampling=Sampling.GT,
                  optim='sgd', learning_rate=1e-1, weight_decay=1e-3, inf_lr=0.5, num_hidden=None,
                  add_second_layer=False, feature_dim=1836, label_dim=159, num_pairwise=16, non_linearity=nn.Softplus()):
@@ -150,7 +149,7 @@ class DVNMultiLabel(DeepValueNetwork):
         if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
-            pred_labels = self.inference(x, init_labels, gt_labels=gt_labels, num_iterations=1)
+            pred_labels = self.inference(x, init_labels, gt_labels=gt_labels, n_steps=1)
         elif self.mode_sampling == Sampling.GT and self.training and np.random.rand() >= 0.5:
             # In training: If gt_sampling=True, add ground truth outputs
             # to provide some positive examples to the network
@@ -160,6 +159,24 @@ class DVNMultiLabel(DeepValueNetwork):
             pred_labels = self.inference(x, init_labels)
 
         return pred_labels
+
+    def inference(self, x, y, gt_labels=None, n_steps=20) -> torch.Tensor:
+        if self.training:
+            self.model.eval()
+
+        optim_inf = SGD(y, lr=self.inf_lr, momentum=0)
+
+        with torch.enable_grad():
+            for i in range(n_steps):
+                y = self._loop_inference(gt_labels, x, y, optim_inf)
+
+        if self.training:
+            self.model.train()
+
+        return y
+
+    def test(self, loader):
+        return self.valid(loader)
 
 
 def run_test_set(path_data: str, path_save: str, mode_sampling: str):
@@ -175,7 +192,8 @@ def run_test_set(path_data: str, path_save: str, mode_sampling: str):
 
     dvn = DVNMultiLabel(use_cuda, optim=params['optim'], inf_lr=params['inf_lr'], learning_rate=params['lr'],
                         weight_decay=params['weight_decay'], num_hidden=params['num_hidden'],
-                        add_second_layer=params['add_second_layer'])
+                        add_second_layer=params['add_second_layer'], loss_fn="bce",
+                        metric_optimize="f1", n_steps_inf=20)
 
     if mode_sampling == Sampling.GT:
         dvn.model.load_state_dict(torch.load('DVN_Inference_and_Ground_Truth.pth'))
@@ -183,12 +201,10 @@ def run_test_set(path_data: str, path_save: str, mode_sampling: str):
         dvn.model.load_state_dict(torch.load('DVN_Inference_and_Adversarial.pth'))
 
     print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = dvn.valid(test_loader)
+    dvn.valid(test_loader)
 
 
 def run_the_model(path_data: str, path_save: str):
-    dir_path = os.path.dirname(os.path.realpath(__file__))
-
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
@@ -196,29 +212,30 @@ def run_the_model(path_data: str, path_save: str):
 
     # Choose ground truth sampling or adversarial sampling
     mode_sampling = Sampling.ADV
-    str_res = 'Ground_Truth' if mode_sampling == Sampling.GT else 'Adversarial'
-    print('Using {} Sampling'.format(str_res))
 
     if mode_sampling == Sampling.GT:
         params = optim_params_gt
     else:
         params = optim_params_adv
 
-    dvn = DVNMultiLabel(use_cuda, mode_sampling, optim=params['optim'],
+    dvn = DVNMultiLabel(use_cuda, mode_sampling=mode_sampling, optim=params['optim'],
                         inf_lr=params['inf_lr'], learning_rate=params['lr'], weight_decay=params['weight_decay'],
-                        num_hidden=params['num_hidden'], add_second_layer=params['add_second_layer'])
+                        num_hidden=params['num_hidden'], add_second_layer=params['add_second_layer'],
+                        loss_fn="bce", metric_optimize="f1", n_steps_inf=10)
 
     # Decay the learning rate by a factor of gamma every step_size # of epochs
     scheduler = torch.optim.lr_scheduler.StepLR(dvn.optimizer, step_size=params['n_epochs_reduce'], gamma=0.1)
     total_epochs = int(params['n_epochs_reduce'] * 2.5)
 
-    results = {'name': 'DVN_Inference_and_' + str_res, 'loss_train': [],
+    results = {'name': 'dvn_' + mode_sampling, 'loss_train': [],
                'loss_valid': [], 'f1_valid': []}
 
-    save_results_file = os.path.join(dir_path, results['name'] + '.pkl')
+    save_results_file = os.path.join(path_save, results['name'] + '.pkl')
+    save_model_file = os.path.join(path_save, results['name'] + '.pth')
 
     for epoch in range(total_epochs):
-        loss_train = dvn.train(train_loader, epoch)
+        print(f"Epoch {epoch}")
+        loss_train = dvn.train(train_loader)
         loss_valid, f1_valid = dvn.valid(valid_loader)
         scheduler.step()
         results['loss_train'].append(loss_train)
@@ -229,14 +246,13 @@ def run_the_model(path_data: str, path_save: str):
             pickle.dump(results, fout)
 
     plot_results(results, iou=False)
-    torch.save(dvn.model.state_dict(), dir_path + '/' + results['name'] + '.pth')
+    torch.save(dvn.model.state_dict(), save_model_file)
 
 
 def main():
-    # run_the_model()
+    run_the_model(PATH_BIBTEX, PATH_MODELS_ML_BIB)
     # Test the pretrained models (Ground Truth and Adversarial)
     # run_test_set(mode_sampling=Sampling.ADV)
-    pass
 
 
 if __name__ == "__main__":

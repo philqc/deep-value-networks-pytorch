@@ -28,6 +28,7 @@ class WeizmannHorseDataset(Dataset):
         self.img_names.sort()
         self.mask_names.sort()
 
+        self.subset = subset
         if subset == 'test':
             self.img_names = self.img_names[200:]
             self.mask_names = self.mask_names[200:]
@@ -94,8 +95,10 @@ class WeizmannHorseDataset(Dataset):
 
         # binarize mask again
         mask = mask >= 0.5
-
-        return input_img, image, mask
+        if self.subset == "test":
+            return input_img, image, mask
+        else:
+            return image, mask
 
     def compute_mean_and_stddev(self):
         n_images = len(self.img_names)

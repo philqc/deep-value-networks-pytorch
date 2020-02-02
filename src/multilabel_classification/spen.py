@@ -3,12 +3,11 @@ import os
 import torch
 import torch.nn as nn
 import time
-from torch.utils.data import DataLoader
 import pickle
 from src.multilabel_classification.feature_network import FeatureMLP
-from src.utils import MyDataset, SGD
+from src.utils import SGD
 from src.multilabel_classification.utils import (
-    normalize_inputs, get_bibtex, compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX,
+    compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX,
     load_training_set_bibtex, load_test_set_bibtex
 )
 from src.multilabel_classification.feature_network import FILE_FEATURE_NETWORK
@@ -100,7 +99,7 @@ class SPEN:
         # are decided using the validation set
         # self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
         #                                 momentum=0.9, weight_decay=weight_decay)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-5,
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate,
                                           weight_decay=weight_decay)
 
     def get_ini_labels(self, x):
@@ -112,7 +111,7 @@ class SPEN:
         y.requires_grad = True
         return y
 
-    def inference(self, x, gt_labels=None, num_iterations=30):
+    def inference(self, x, gt_labels=None, n_steps=30):
 
         if self.training:
             self.model.eval()
@@ -124,7 +123,7 @@ class SPEN:
         optim_inf = SGD(y_pred, lr=0.1, momentum=0.95)
         with torch.enable_grad():
 
-            for i in range(num_iterations):
+            for i in range(n_steps):
 
                 pred_energy = self.model(x, y_pred)
 
@@ -191,7 +190,7 @@ class SPEN:
         print('')
         return t_loss
 
-    def valid(self, loader, test_set=False):
+    def valid(self, loader):
 
         self.model.eval()
         self.training = False
@@ -226,10 +225,7 @@ class SPEN:
 
         mean_f1 = np.mean(mean_f1)
         loss /= t_size
-
-        str_first = 'Test set' if test_set else 'Validation set'
-        print('{}: Avg_Loss = {:.2f}; F1_Score = {:.2f}%'
-              ''.format(str_first, loss.item(), 100 * mean_f1))
+        print('Avg_Loss = {:.2f}; F1_Score = {:.2f}%'.format(loss.item(), 100 * mean_f1))
 
         return loss.item(), mean_f1
 
@@ -245,7 +241,7 @@ def run_test_set(path_data: str, path_save: str, path_feature_extractor: str):
     spen.model.load_state_dict(torch.load('Spen_bibtex.pth'))
 
     print('Computing the F1 Score on the test set...')
-    loss_test, f1_test = spen.valid(test_loader, test_set=True)
+    spen.valid(test_loader)
 
 
 def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
@@ -257,7 +253,7 @@ def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
 
     spen = SPEN(use_cuda, path_feature_extractor=path_feature_extractor)
 
-    results = {'name': 'SPEN_bibtex', 'loss_train': [],
+    results = {'name': 'spen_bibtex', 'loss_train': [],
                'loss_valid': [], 'f1_valid': []}
 
     save_results_file = os.path.join(path_save, results['name'] + '.pkl')
@@ -265,7 +261,7 @@ def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
     scheduler = torch.optim.lr_scheduler.StepLR(spen.optimizer, step_size=10, gamma=0.1)
 
     best_f1_valid = 0
-    for epoch in range(25):
+    for epoch in range(10):
         loss_train = spen.train(train_loader, epoch)
         loss_valid, f1_valid = spen.valid(valid_loader)
         scheduler.step()

@@ -2,14 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import numpy as np
 import os
 from src.multilabel_classification.utils import (
-    normalize_inputs, compute_f1_score, get_bibtex, PATH_MODELS_ML_BIB, PATH_BIBTEX,
+    compute_f1_score, PATH_MODELS_ML_BIB, PATH_BIBTEX,
     load_training_set_bibtex, load_test_set_bibtex
 )
-from src.utils import MyDataset
 from src.visualization_utils import plot_results
 
 # Parameters to reproduce the baseline results of the SPEN paper
@@ -114,7 +112,6 @@ class FeatureNetwork:
     def valid(self, loader):
         """
         Compute the loss and the F1 Score
-        on the validation set
         """
         self.model.eval()
 
@@ -140,45 +137,14 @@ class FeatureNetwork:
 
         mean_f1 = np.mean(mean_f1)
         loss /= t_size
-        print('Validation set: Avg_Loss = {:.2f}; F1_Score = {:.2f}'.format(loss.item(), 100 * mean_f1))
+        print('Avg_Loss = {:.2f}; F1_Score = {:.2f}'.format(loss.item(), 100 * mean_f1))
 
         return loss.item(), mean_f1
-
-    def test(self, loader, test_labels):
-
-        self.model.eval()
-        outputs = []
-        loss, t_size = 0, 0
-
-        with torch.no_grad():
-            for (inputs, targets) in loader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
-                inputs = inputs.float()
-                t_size += len(inputs)
-
-                output = self.model(inputs)
-                loss += self.loss_fn(output.float(), targets.float())
-
-                output_in_0_1 = output.round().int()
-                outputs.append(output_in_0_1)
-
-        loss /= t_size
-
-        # convert list of tensors to tensor
-        b = torch.Tensor(test_labels.shape).int()
-        outputs = torch.cat(outputs, out=b)
-        test_labels = torch.from_numpy(test_labels)
-
-        f1 = np.mean(compute_f1_score(test_labels, outputs))
-
-        print('Test set : Avg_Loss = {:.2f}; F1 score = {:.2f}%'.format(loss, 100 * f1))
-
-        return loss, f1
 
 
 def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, use_cuda: bool):
 
-    train_loader, valid_loader = load_training_set_bibtex(path_data, use_cuda,
+    train_loader, valid_loader = load_training_set_bibtex(path_data, path_save, use_cuda,
                                                           batch_size=32, shuffle=False)
 
     if do_feature_extraction:
@@ -212,12 +178,12 @@ def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, u
     plot_results(results, iou=False)
 
 
-def test_the_model(path_data: str, path_save: str, use_cuda: bool):
+def run_test_set(path_data: str, path_save: str, use_cuda: bool):
     f_net = FeatureNetwork(use_cuda)
     f_net.model.load_state_dict(torch.load(os.path.join(path_save, FILE_FEATURE_NETWORK)))
     test_loader = load_test_set_bibtex(path_data, path_save, use_cuda)
-    # TODO: Fix this
-    # loss_test, f1_test = f_net.test(test_loader, test_labels)
+    print(f"Computing F1 Score on Test set...")
+    f_net.valid(test_loader)
 
 
 def main():
@@ -229,7 +195,7 @@ def main():
     run_the_model(feature_extraction, path_data=PATH_BIBTEX,
                   path_save=PATH_MODELS_ML_BIB, use_cuda=use_cuda)
 
-    test_the_model(PATH_BIBTEX, PATH_MODELS_ML_BIB, use_cuda)
+    run_test_set(PATH_BIBTEX, PATH_MODELS_ML_BIB, use_cuda)
 
 
 if __name__ == "__main__":
