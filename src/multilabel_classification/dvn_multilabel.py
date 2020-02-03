@@ -6,9 +6,8 @@ from typing import Optional
 
 from src.multilabel_classification.model.energy_network_dvn import EnergyNetwork
 from src.model.deep_value_network import DeepValueNetwork
-from src.utils import SGD
 from src.multilabel_classification.utils import (
-   load_training_set_bibtex, load_test_set_bibtex, PATH_BIBTEX, PATH_MODELS_ML_BIB, train_for_num_epochs
+    load_training_set_bibtex, load_test_set_bibtex, PATH_BIBTEX, PATH_MODELS_ML_BIB, train_for_num_epochs
 )
 
 # Optimal parameters for Adversarial sampling from Gygli
@@ -57,7 +56,7 @@ class DVNMultiLabel(DeepValueNetwork):
         super().__init__(model, metric_optimize, mode_sampling, optim, learning_rate,
                          weight_decay, inf_lr, n_steps_inf, label_dim, loss_fn)
 
-    def generate_output(self, x,  training: bool, gt_labels: Optional[torch.Tensor] = None):
+    def generate_output(self, x, training: bool, gt_labels: Optional[torch.Tensor] = None):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different

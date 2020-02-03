@@ -426,7 +426,7 @@ def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
 
     plot_results("F1 Score", results['loss_train'], results['loss_valid'],
                  results['f1_valid'], None)
-    plot_hamming_loss(results)
+    plot_hamming_loss(results['hamming_loss_train'], results['hamming_loss_valid'])
 
 
 def main():

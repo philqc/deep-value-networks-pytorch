@@ -7,4 +7,3 @@ Pillow
 scikit-image
 liac-arff
 flake8
-mypy

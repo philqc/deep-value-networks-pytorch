@@ -43,7 +43,7 @@ class DeepValueNetwork(EnergyModel):
             raise ValueError(f"Invalid metric_optimize provided = {metric_optimize}")
 
     @abstractmethod
-    def generate_output(self, x: torch.Tensor,  training: bool, gt_labels: Optional[torch.Tensor] = None):
+    def generate_output(self, x: torch.Tensor, training: bool, gt_labels: Optional[torch.Tensor] = None):
         pass
 
     def get_ini_labels(self, x: torch.Tensor, gt_labels: Optional[torch.Tensor] = None):

@@ -5,7 +5,7 @@ import os
 from typing import Optional
 import argparse
 
-from src.utils import SGD, create_path_that_doesnt_exist
+from src.utils import create_path_that_doesnt_exist
 from src.visualization_utils import plot_results
 from src.model.deep_value_network import DeepValueNetwork
 from src.image_segmentation.weizmann_horse_dataset import (
