@@ -10,7 +10,7 @@ class DeepValueNetwork(BaseModel):
 
     def __init__(self, torch_model, metric_optimize: str, use_cuda: bool, mode_sampling: str, optim: str,
                  learning_rate: float, weight_decay: float, inf_lr: float, n_steps_inf: int,
-                 label_dim: Union[int, Tuple[int]], loss_fn: str):
+                 label_dim: Union[int, Tuple[int]], loss_fn: str, momentum: float, momentum_inf: float = 0.0):
 
         self.mode_sampling = mode_sampling
         if self.mode_sampling == Sampling.STRAT:
@@ -37,14 +37,20 @@ class DeepValueNetwork(BaseModel):
         if loss_fn.lower() == "bce":
             self.loss_fn = torch.nn.BCEWithLogitsLoss()
             self.use_bce = True
+            print('Using Binary Cross Entropy with Logits Loss')
         elif loss_fn.lower() == "mse":
             self.loss_fn = torch.nn.MSELoss()
             self.use_bce = False
+            print('Using Mean Squared Error Loss')
         else:
             raise ValueError(f"Invalid loss_fn provided = {loss_fn}")
 
+        # Inference hyperparameters
         self.inf_lr = inf_lr
         self.n_steps_inf = n_steps_inf
+        self.momentum_inf = momentum_inf
+        ############################
+
         self.new_ep = True
         self.device = torch.device("cuda" if use_cuda else "cpu")
         self.label_dim = label_dim
@@ -53,7 +59,8 @@ class DeepValueNetwork(BaseModel):
         # Model and optimizer
         self.model = torch_model.to(self.device)
         if optim.lower() == 'sgd':
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
+                                             momentum=momentum, weight_decay=weight_decay)
         elif optim.lower() == 'adam':
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
         else:

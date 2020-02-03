@@ -1,8 +1,11 @@
 import torch
 from torchvision import transforms
 from torch.utils.data import Dataset
+import numpy as np
 import os
 from PIL import Image
+
+from src.visualization_utils import show_grid_imgs
 
 NUM_TRAIN = 10000
 NUM_TEST = 10000
@@ -65,10 +68,10 @@ inv_normalize = transforms.Normalize(
 
 
 class FlickrTaggingDataset(Dataset):
-    """ Dataset can be downloaded at
+    """
+    Dataset can be downloaded at
     http://press.liacs.nl/mirflickr/mirdownload.html
     """
-
     def __init__(self, type_dataset, images_folder, save_img_file, annotations_folder,
                  save_label_file, mode, load=False):
         if type_dataset == 'full':
@@ -232,3 +235,18 @@ def show_pred_labels(label, is_true_label):
                 if i + 1 % 8 == 0 and i > 0:
                     print('')
     print('')
+
+
+def visualize_predictions(inputs, pred_labels, targets, use_features: bool, use_unary: bool) -> None:
+    idx = np.random.choice(np.arange(len(inputs)), 3, replace=False)
+    if not use_features and not use_unary:
+        inputs_unnormalized = inputs[idx].cpu()
+        inputs_unnormalized = [inv_normalize(i) for i in inputs_unnormalized]
+        show_grid_imgs(inputs_unnormalized, black_and_white=False)
+
+    for i, j in enumerate(idx):
+        print('({}) pred labels: '.format(i), end='')
+        show_pred_labels(pred_labels[j], False)
+        print('({}) true labels: '.format(i), end='')
+        show_pred_labels(targets[j], True)
+        print('------------------------------------')

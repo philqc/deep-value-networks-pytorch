@@ -164,7 +164,7 @@ class DVNMultiLabel(DeepValueNetwork):
         if self.training:
             self.model.eval()
 
-        optim_inf = SGD(y, lr=self.inf_lr, momentum=0)
+        optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
 
         with torch.enable_grad():
             for i in range(n_steps):
