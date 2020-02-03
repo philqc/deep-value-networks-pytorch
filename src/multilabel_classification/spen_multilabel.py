@@ -48,9 +48,9 @@ class SPENClassification(SPEN):
         super().__init__(model, optim, learning_rate, weight_decay, inf_lr, n_steps_inf, label_dim,
                          loss_fn, momentum, momentum_inf)
 
-    def inference(self, x, n_steps: int):
+    def inference(self, x, training: bool, n_steps: int):
 
-        if self.training:
+        if training:
             self.model.eval()
 
         y_pred = self.get_ini_labels(x)
@@ -62,15 +62,15 @@ class SPENClassification(SPEN):
                 # Update y_pred
                 y_pred = self._loop_inference(pred_energy, y_pred, optim_inf)
 
-        if self.training:
+        if training:
             self.model.train()
 
         return y_pred
 
-    def _compute_loss(self, inputs, targets):
+    def _compute_loss(self, inputs, targets, training: bool):
         f_x = self.feature_extractor(inputs)
 
-        pred_labels = self.inference(f_x, self.n_steps_inf)
+        pred_labels = self.inference(f_x, training, self.n_steps_inf)
         pred_energy = self.model(f_x, pred_labels)
         # Energy ground truth
         gt_energy = self.model(f_x, targets)
@@ -85,7 +85,6 @@ class SPENClassification(SPEN):
     def train(self, loader):
 
         self.model.train()
-        self.training = True
         n_train = len(loader.dataset)
         time_start = time.time()
         t_loss, t_size = 0, 0
@@ -98,7 +97,7 @@ class SPENClassification(SPEN):
 
             self.model.zero_grad()
 
-            pred_labels, loss = self._compute_loss(inputs, targets)
+            pred_labels, loss = self._compute_loss(inputs, targets, True)
             t_loss += loss.item()
 
             loss.backward()
@@ -111,14 +110,12 @@ class SPENClassification(SPEN):
                       end='')
 
         t_loss /= t_size
-        self.training = False
         print('')
         return t_loss
 
     def valid(self, loader):
 
         self.model.eval()
-        self.training = False
         t_loss, t_size = 0, 0
         mean_f1 = []
 
@@ -128,10 +125,10 @@ class SPENClassification(SPEN):
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels, loss = self._compute_loss(inputs, targets)
+                pred_labels, loss = self._compute_loss(inputs, targets, False)
                 t_loss += loss
 
-                f1_score = self._f1_score(pred_labels, targets)
+                f1_score = self._f1_score(pred_labels, targets, False)
                 for f in f1_score:
                     mean_f1.append(f)
 

@@ -3,21 +3,23 @@ import matplotlib.pyplot as plt
 import os
 import pickle
 import torchvision
+from typing import Optional, List
 
 
-def show_img(img, black_and_white=True):
+def show_img(img, black_and_white=True, title: Optional[str] = None):
     np_img = img.numpy()
     # put channel at the end for plt.imshow
     if np_img.ndim == 3:
         np_img = np.transpose(np_img, (1, 2, 0))
 
-    print('np_img.shape', np_img.shape)
+    if title is not None:
+        plt.title(title)
+
     if black_and_white:
         plt.imshow(np_img, cmap='Greys_r')
-        plt.show()
     else:
         plt.imshow(np_img)
-        plt.show()
+    plt.show()
 
 
 def save_img(img, path_to_save, black_and_white=True):
@@ -34,35 +36,38 @@ def save_grid_imgs(input_imgs, path_to_save, black_and_white=True):
     save_img(img, path_to_save, black_and_white)
 
 
-def show_grid_imgs(input_imgs, black_and_white=True):
+def show_grid_imgs(input_imgs, black_and_white=True, title: Optional[str] = None):
     img = torchvision.utils.make_grid(input_imgs, nrow=8)
-    show_img(img, black_and_white)
+    show_img(img, black_and_white, title)
 
 
-def plot_results(results, iou=False):
+def plot_results(str_score: str, train_loss: List, valid_loss: List,
+                 valid_score: List, train_score: Optional[List] = None) -> None:
     """
-    Parameters:
+    Parameters
     ----------
-    results: dictionary with the train/valid loss
-    and the f1 scores]
-    iou: bool
-      if true: print IOU, else print F1 Score
+    str_score: Title for second plot (ex: F1 Score, Hamming Loss, IOU)
+    train_loss: List of train loss accross epochs
+    valid_loss
+    valid_score
+    train_score
     """
-    str_score = 'IOU' if iou else 'F1 Score'
+    x = list(range(1, len(train_loss) + 1))
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
     ax1.set_title('Loss')
     ax1.set_ylabel('loss')
     ax1.set_xlabel('epochs')
-    ax2.set_title('Validation ' + str_score)
+    ax2.set_title(str_score)
     ax2.set_ylabel(str_score)
     ax2.set_xlabel('epochs')
 
-    ax1.plot(results['loss_train'], label='loss_train')
-    ax1.plot(results['loss_valid'], label='loss_valid')
-    if iou:
-        ax2.plot(results['IOU_valid'])
-    else:
-        ax2.plot(results['f1_valid'])
+    ax1.plot(x, train_loss, label='loss_train')
+    ax1.plot(x, valid_loss, label='loss_valid')
+
+    ax2.plot(x, valid_score, label="validation")
+    if train_score is not None:
+        ax2.plot(x, train_score, label="train")
+        ax2.legend()
 
     ax1.legend()
     plt.show()

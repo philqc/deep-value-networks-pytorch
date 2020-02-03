@@ -3,19 +3,19 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 import random
-import os
 import pickle
+from typing import Optional
 
 from src.model.deep_value_network import DeepValueNetwork
 from src.model.spen import SPEN
 from src.visualization_utils import plot_results
-from src.utils import SGD, create_path_that_doesnt_exist, project_root
-from .utils import calculate_hamming_loss, plot_hamming_loss, load_train_dataset_flickr
-from .load_flickr import visualize_predictions
-from .model.top_layer import TopLayer
-from .model.conv_net import ConvNet
-
-PATH_FLICKR = os.path.join(project_root(), "data", "flickr")
+from src.utils import SGD, create_path_that_doesnt_exist
+from src.image_tagging.utils import calculate_hamming_loss, plot_hamming_loss
+from src.image_tagging.load_save_flickr import (
+    load_train_dataset_flickr, visualize_predictions, PATH_FLICKR_DATA, PATH_SAVE_FLICKR
+)
+from src.image_tagging.model.top_layer import TopLayer
+from src.image_tagging.model.energy_conv_net import EnergyConvNet
 
 
 class DVNImgTagging(DeepValueNetwork):
@@ -42,9 +42,8 @@ class DVNImgTagging(DeepValueNetwork):
             Sampling.GT:
                 Simply add the ground truth outputs y* with some probably p while training.
         """
-        # Deep Value Network is just a ConvNet
-        model = ConvNet(use_unary, use_features, label_dim, num_hidden,
-                        num_pairwise, add_second_layer)
+        model = EnergyConvNet(use_unary, use_features, label_dim, num_hidden,
+                              num_pairwise, add_second_layer)
 
         super().__init__(model, metric_optimize, mode_sampling, optim, learning_rate, weight_decay,
                          inf_lr, n_steps_inf, label_dim, loss_fn, momentum=momentum)
@@ -58,7 +57,7 @@ class DVNImgTagging(DeepValueNetwork):
 
         self.shuffle_n_size = shuffle_n_size
 
-    def generate_output(self, x, gt_labels=None):
+    def generate_output(self, x, training: bool, gt_labels: Optional[torch.Tensor] = None):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different
@@ -69,50 +68,30 @@ class DVNImgTagging(DeepValueNetwork):
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
         using_inference = False
-        if self.using_adv_sampling() and self.training and np.random.rand() >= 0.5:
+        if self.using_adv_sampling() and training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             # n_steps = random.randint(1, self.n_steps_adv)
-            pred_labels = self.inference(x, init_labels, n_steps=self.n_steps_adv, gt_labels=gt_labels)
-        elif self.using_gt_sampling() and self.training and np.random.rand() >= 0.5:
+            pred_labels = self.inference(x, init_labels, training, n_steps=self.n_steps_adv, gt_labels=gt_labels)
+        elif self.using_gt_sampling() and training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
         else:
             using_inference = True
             init_labels = self.get_ini_labels(x)
-            if self.training and self.shuffle_n_size:
+            if training and self.shuffle_n_size:
                 n_steps = random.randint(1, self.n_steps_inf)
             else:
                 n_steps = self.n_steps_inf
 
-            pred_labels = self.inference(x, init_labels, n_steps=n_steps)
+            pred_labels = self.inference(x, init_labels, training, n_steps=n_steps)
 
         return pred_labels.detach().clone(), using_inference
-
-    def inference(self, x, y, gt_labels=None, n_steps=20):
-
-        if self.training:
-            self.model.eval()
-
-        y = y.detach().clone()
-        y.requires_grad = True
-        optim_inf = SGD(y, lr=self.inf_lr)
-
-        with torch.enable_grad():
-            for i in range(n_steps):
-                self._loop_inference(gt_labels, x, y, optim_inf)
-
-        if self.training:
-            self.model.train()
-
-        return y
 
     def train(self, loader):
 
         self.model.train()
-        self.training = True
-        self.new_ep = True
         n_train = len(loader.dataset)
         time_start = time.time()
         t_loss, t_hamming_loss, t_size, inf_size = 0, 0, 0, 0
@@ -125,9 +104,9 @@ class DVNImgTagging(DeepValueNetwork):
 
             self.model.zero_grad()
 
-            pred_labels, using_inference = self.generate_output(inputs, targets)
+            pred_labels, using_inference = self.generate_output(inputs, True, targets)
             output = self.model(inputs, pred_labels)
-            oracle = self.oracle_value(pred_labels, targets)
+            oracle = self.oracle_value(pred_labels, targets, True)
             loss = self.loss_fn(output, oracle)
 
             if using_inference:
@@ -136,7 +115,7 @@ class DVNImgTagging(DeepValueNetwork):
                 # use detach.clone() to avoid pytorch storing the variables in computational graph
                 if self.use_hamming_metric:
                     if self.use_bce:
-                        t_hamming_loss += 24. * oracle.detach().clone().sum()
+                        t_hamming_loss += self.label_dim * oracle.detach().clone().sum()
                     else:
                         t_hamming_loss += oracle.detach().clone().sum()
                 else:
@@ -153,8 +132,8 @@ class DVNImgTagging(DeepValueNetwork):
                 print_output = torch.sigmoid(output) if self.use_bce else output
 
                 if self.use_hamming_metric:
-                    scaled_out = 24 * print_output if self.use_bce else print_output
-                    scale_oracle = 24 * oracle if self.use_bce else oracle
+                    scaled_out = self.label_dim * print_output if self.use_bce else print_output
+                    scale_oracle = self.label_dim * oracle if self.use_bce else oracle
                     print('\rTraining: [{} / {} ({:.0f}%)]: Time per epoch: {:.2f}s; '
                           'Avg_Loss = {:.5f}; Avg_H_Loss = {:.4f}; Pred_H = {:.2f}; Real_H = {:.2f}'
                           ''.format(t_size, n_train, 100 * t_size / n_train,
@@ -169,19 +148,14 @@ class DVNImgTagging(DeepValueNetwork):
                                     t_hamming_loss / inf_size, 100 * print_output.mean(), 100 * oracle.mean()),
                           end='')
 
-            self.new_ep = False
-
         t_hamming_loss /= inf_size
         t_loss /= inf_size
-        self.training = False
         print('')
         return t_loss, t_hamming_loss
 
     def valid(self, loader):
 
         self.model.eval()
-        self.training = False
-        self.new_ep = True
         t_loss, t_hamming_loss, t_size = 0, 0, 0
         mean_f1 = []
         int_show = random.randint(0, 20)
@@ -192,14 +166,14 @@ class DVNImgTagging(DeepValueNetwork):
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels, _ = self.generate_output(inputs, gt_labels=None)
+                pred_labels, _ = self.generate_output(inputs, False)
                 output = self.model(inputs, pred_labels)
 
-                oracle = self.oracle_value(pred_labels, targets)
+                oracle = self.oracle_value(pred_labels, targets, False)
 
                 if self.use_hamming_metric:
                     if self.use_bce:
-                        t_hamming_loss += 24. * oracle.sum()
+                        t_hamming_loss += self.label_dim * oracle.sum()
                     else:
                         t_hamming_loss += oracle.sum()
                 else:
@@ -207,14 +181,12 @@ class DVNImgTagging(DeepValueNetwork):
 
                 t_loss += self.loss_fn(output, oracle)
                 if self.use_hamming_metric:
-                    f1 = self._f1_score(pred_labels, targets)
+                    f1 = self._f1_score(pred_labels, targets, False)
                     for f in f1:
                         mean_f1.append(f)
                 else:
                     for o in oracle:
                         mean_f1.append(o)
-
-                self.new_ep = False
 
                 if batch_idx == int_show:
                     visualize_predictions(inputs, pred_labels, targets,
@@ -255,19 +227,19 @@ class SPENImgTagging(SPEN):
         if self.use_top_layer:
             model = TopLayer(label_dim).to(self.device)
         else:
-            model = ConvNet(use_unary, use_features, label_dim, num_hidden,
-                            num_pairwise, add_second_layer).to(self.device)
+            model = EnergyConvNet(use_unary, use_features, label_dim, num_hidden,
+                                  num_pairwise, add_second_layer).to(self.device)
 
-        super().__init__(model, use_cuda, optim, learning_rate, weight_decay, inf_lr, n_steps_inf, label_dim,
+        super().__init__(model, optim, learning_rate, weight_decay, inf_lr, n_steps_inf, label_dim,
                          loss_fn, momentum, momentum_inf)
 
         self.use_features = use_features
         self.use_unary = use_unary
         self.use_top_layer = use_top_layer
 
-    def inference(self, x, n_steps: int):
+    def inference(self, x, training: bool, n_steps: int):
 
-        if self.training:
+        if training:
             self.model.eval()
 
         y_pred = self.get_ini_labels(x)
@@ -282,15 +254,15 @@ class SPENImgTagging(SPEN):
                     pred_energy = self.model(x, y_pred)
 
                 # Update y_pred
-                y_pred = self._loop_inference(pred_energy, y_pred, optim_inf)
+                y_pred = self._loop_inference(pred_energy, y_pred, optim_inf, training)
 
-        if self.training:
+        if training:
             self.model.train()
 
         return y_pred
 
-    def _compute_loss(self, inputs, targets):
-        pred_labels = self.inference(inputs, self.n_steps_inf)
+    def _compute_loss(self, inputs, targets, training: bool):
+        pred_labels = self.inference(inputs, training, self.n_steps_inf)
 
         if self.use_top_layer:
             pred_energy = self.model(inputs)
@@ -316,14 +288,12 @@ class SPENImgTagging(SPEN):
 
         hamming_loss = calculate_hamming_loss(pred_labels, targets)
 
-        f1 = self._f1_score(targets, pred_labels)
+        f1 = self._f1_score(targets, pred_labels, training)
         return pred_labels, loss, hamming_loss, f1
 
-    def train(self, loader):
+    def train(self, loader: DataLoader):
 
         self.model.train()
-        self.training = True
-        self.new_ep = True
         n_train = len(loader.dataset)
         time_start = time.time()
         t_loss, t_hamming_loss, t_size = 0, 0, 0
@@ -336,7 +306,7 @@ class SPENImgTagging(SPEN):
 
             self.model.zero_grad()
 
-            pred_labels, loss, hamming_loss, f1 = self._compute_loss(inputs, targets)
+            pred_labels, loss, hamming_loss, f1 = self._compute_loss(inputs, targets, True)
 
             t_loss += loss.detach().clone().item()
             t_hamming_loss += hamming_loss
@@ -356,19 +326,14 @@ class SPENImgTagging(SPEN):
                                 t_hamming_loss / t_size),
                       end='')
 
-            self.new_ep = False
-
         t_hamming_loss /= t_size
         t_loss /= t_size
-        self.training = False
         print('')
         return t_loss, t_hamming_loss
 
-    def valid(self, loader):
+    def valid(self, loader: DataLoader):
 
         self.model.eval()
-        self.training = False
-        self.new_ep = True
         t_loss, t_hamming_loss, t_size = 0, 0, 0
         mean_f1 = []
         int_show = random.randint(0, 20)
@@ -379,15 +344,13 @@ class SPENImgTagging(SPEN):
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels, loss, hamming_loss, f1 = self._compute_loss(inputs, targets)
+                pred_labels, loss, hamming_loss, f1 = self._compute_loss(inputs, targets, False)
 
                 t_loss += loss.detach().clone().item()
                 t_hamming_loss += hamming_loss
 
                 for f in f1:
                     mean_f1.append(f)
-
-                self.new_ep = False
 
                 if batch_idx == int_show:
                     visualize_predictions(inputs, pred_labels, targets,
@@ -405,7 +368,7 @@ class SPENImgTagging(SPEN):
 
 
 def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
-                  valid_loader: DataLoader, path_save: str, use_cuda):
+                  valid_loader: DataLoader, path_save: str):
     mode_sampling = DeepValueNetwork.Sampling_Adv
 
     use_top_layer = False
@@ -424,7 +387,7 @@ def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
     else:
         energy_network = SPENImgTagging(use_top_layer, use_unary, use_features,
                                         add_second_layer=False, learning_rate=3e-2, momentum=0, weight_decay=1e-4,
-                                        inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16, label_dim=24,
+                                        inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16,
                                         n_steps_inf=30, loss_fn="mse", optim="adam")
         str_res = 'spen'
 
@@ -461,7 +424,8 @@ def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
             print('--- Saving model at Hamming = {:.4f} ---'.format(h_loss_valid))
             torch.save(energy_network.model.state_dict(), path_model)
 
-    plot_results(results, iou=False)
+    plot_results("F1 Score", results['loss_train'], results['loss_valid'],
+                 results['f1_valid'], None)
     plot_hamming_loss(results)
 
 
@@ -471,7 +435,7 @@ def main():
 
     use_cuda = torch.cuda.is_available()
     train_loader, valid_loader = load_train_dataset_flickr(
-        PATH_FLICKR,
+        PATH_FLICKR_DATA,
         use_features=use_features,
         use_unary=use_features,
         use_cuda=use_cuda,
@@ -481,7 +445,7 @@ def main():
 
     # Start training
     run_the_model(use_unary, use_features, train_loader,
-                  valid_loader, PATH_FLICKR, use_cuda)
+                  valid_loader, PATH_SAVE_FLICKR)
 
 
 if __name__ == "__main__":

@@ -164,4 +164,5 @@ def train_for_num_epochs(meta_model: BaseModel, train_loader: DataLoader, valid_
             print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_val_found))
             torch.save(meta_model.model.state_dict(), path_save_model)
 
-    plot_results(results, iou=False)
+    plot_results("F1 Score", results['loss_train'], results['loss_valid'],
+                 results['f1_valid'], None)

@@ -1,4 +1,5 @@
 import torch
+from torch.utils.data import DataLoader
 from abc import abstractmethod
 from typing import Union, Tuple
 from .energy_model import EnergyModel
@@ -13,7 +14,7 @@ class SPEN(EnergyModel):
         super().__init__(torch_model, optim, learning_rate, weight_decay, inf_lr,
                          n_steps_inf, label_dim, loss_fn, momentum, momentum_inf)
 
-    def get_ini_labels(self, x):
+    def get_ini_labels(self, x: torch.Tensor):
         """
         Get the tensor of predicted labels
         that we will do inference on
@@ -38,14 +39,14 @@ class SPEN(EnergyModel):
         return y_pred
 
     @abstractmethod
-    def inference(self, x, n_steps: int):
+    def inference(self, x, training: bool, n_steps: int):
         pass
 
-    def train(self, loader):
+    def train(self, loader: DataLoader):
         pass
 
-    def valid(self, loader):
+    def valid(self, loader: DataLoader):
         pass
 
-    def test(self, loader):
+    def test(self, loader: DataLoader):
         return self.valid(loader)

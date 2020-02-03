@@ -67,13 +67,10 @@ def get_iou(y_pred: torch.Tensor, y_true: torch.Tensor):
     return intersect / max(10 ** -8, union)
 
 
-def show_preds_test_time(raw_inputs, final_pred, oracle) -> None:
-    print('------ Test: IOU = {:.2f}% ------'.format(100 * oracle.mean()))
+def show_preds_test_time(raw_inputs, final_pred) -> None:
     img = raw_inputs.detach().cpu()
     show_grid_imgs(img)
     mask = final_pred.detach().cpu()
-    show_grid_imgs(mask.float())
-    print('Mask binary')
+    show_grid_imgs(mask.float(), title="Predicted Mask")
     bin_mask = mask >= 0.50
-    show_grid_imgs(bin_mask.float())
-    print('---------------------------------------')
+    show_grid_imgs(bin_mask.float(), title="Predicted Binary Mask")

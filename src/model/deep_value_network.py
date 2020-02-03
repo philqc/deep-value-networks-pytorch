@@ -1,7 +1,9 @@
 import torch
+from torch.utils.data import DataLoader
 from abc import abstractmethod
 import time
-from typing import Union, Tuple
+from typing import Union, Tuple, Optional
+from src.utils import SGD
 from .energy_model import EnergyModel
 
 
@@ -29,22 +31,22 @@ class DeepValueNetwork(EnergyModel):
         self.use_hamming_metric = False
         if metric_optimize.lower() == "f1":
             self.score_str = "F1"
-            self.oracle_value = lambda x, y: self._f1_score(x, y)
+            self.oracle_value = lambda x, y, z: self._f1_score(x, y, z)
         elif metric_optimize.lower() == "hamming":
             self.score_str = "Hamming"
             self.use_hamming_metric = True
-            self.oracle_value = lambda x, y: self._scaled_hamming_loss(x, y)
+            self.oracle_value = lambda x, y, z: self._scaled_hamming_loss(x, y, z)
         elif metric_optimize.lower() == "iou":
             self.score_str = "IOU"
-            self.oracle_value = lambda x, y: self._iou_score(x, y)
+            self.oracle_value = lambda x, y, z: self._iou_score(x, y, z)
         else:
             raise ValueError(f"Invalid metric_optimize provided = {metric_optimize}")
 
     @abstractmethod
-    def generate_output(self, x, gt_labels):
+    def generate_output(self, x: torch.Tensor,  training: bool, gt_labels: Optional[torch.Tensor] = None):
         pass
 
-    def get_ini_labels(self, x, gt_labels=None):
+    def get_ini_labels(self, x: torch.Tensor, gt_labels: Optional[torch.Tensor] = None):
         """
         Get the tensor of predicted labels
         that we will do inference on
@@ -60,10 +62,13 @@ class DeepValueNetwork(EnergyModel):
         y.requires_grad = True
         return y
 
-    def _loop_inference(self, gt_labels, x, y, optim_inf) -> torch.Tensor:
+    def _loop_inference(
+            self, gt_labels: torch.Tensor, x: torch.Tensor, y: torch.Tensor,
+            optim_inf: torch.optim, training: bool
+    ) -> torch.Tensor:
         if gt_labels is not None:  # Adversarial
             output = self.model(x, y)
-            oracle = self.oracle_value(y, gt_labels)
+            oracle = self.oracle_value(y, gt_labels, training)
             # this is the BCE loss with logits
             value = self.loss_fn(output, oracle)
         else:
@@ -85,14 +90,27 @@ class DeepValueNetwork(EnergyModel):
         y = torch.clamp(y, 0, 1)
         return y
 
-    @abstractmethod
-    def inference(self, x, y, gt_labels=None, n_steps=20):
-        pass
+    def inference(
+            self, x: torch.Tensor, y: torch.Tensor, training: bool,
+            gt_labels: Optional[torch.Tensor] = None, n_steps=20
+    ) -> torch.Tensor:
+        if training:
+            self.model.eval()
 
-    def train(self, loader):
+        optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
+
+        with torch.enable_grad():
+            for i in range(n_steps):
+                y = self._loop_inference(gt_labels, x, y, optim_inf, training)
+
+        if training:
+            self.model.train()
+
+        return y
+
+    def train(self, loader: DataLoader):
 
         self.model.train()
-        self.training = True
         n_train = len(loader.dataset)
 
         time_start = time.time()
@@ -105,9 +123,9 @@ class DeepValueNetwork(EnergyModel):
 
             self.model.zero_grad()
 
-            pred_labels = self.generate_output(inputs, targets)
+            pred_labels = self.generate_output(inputs, True, targets)
             output = self.model(inputs, pred_labels)
-            oracle = self.oracle_value(pred_labels, targets)
+            oracle = self.oracle_value(pred_labels, targets, True)
             loss = self.loss_fn(output, oracle)
 
             if torch.isnan(loss):
@@ -129,15 +147,12 @@ class DeepValueNetwork(EnergyModel):
                       end='')
 
         t_loss /= t_size
-        self.training = False
         print('')
         return t_loss
 
-    def valid(self, loader):
+    def valid(self, loader: DataLoader):
 
         self.model.eval()
-        self.training = False
-        self.new_ep = True
         loss, t_size = 0, 0
         mean_oracle = []
 
@@ -147,14 +162,13 @@ class DeepValueNetwork(EnergyModel):
                 inputs, targets = inputs.float(), targets.float()
                 t_size += len(inputs)
 
-                pred_labels = self.generate_output(inputs, gt_labels=None)
+                pred_labels = self.generate_output(inputs, False)
                 output = self.model(inputs, pred_labels)
-                oracle = self.oracle_value(pred_labels, targets)
+                oracle = self.oracle_value(pred_labels, targets, False)
 
                 loss += self.loss_fn(output, oracle)
                 for o in oracle:
                     mean_oracle.append(o)
-                self.new_ep = False
 
         mean_oracle = torch.stack(mean_oracle)
         mean_oracle = torch.mean(mean_oracle)
@@ -167,7 +181,7 @@ class DeepValueNetwork(EnergyModel):
 
         return loss.item(), mean_oracle
 
-    def test(self, loader):
+    def test(self, loader: DataLoader):
         return self.valid(loader)
 
     def using_adv_sampling(self):

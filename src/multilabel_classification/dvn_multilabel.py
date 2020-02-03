@@ -2,6 +2,7 @@ import numpy as np
 import os
 import torch
 import torch.nn as nn
+from typing import Optional
 
 from src.multilabel_classification.model.energy_network_dvn import EnergyNetwork
 from src.model.deep_value_network import DeepValueNetwork
@@ -56,7 +57,7 @@ class DVNMultiLabel(DeepValueNetwork):
         super().__init__(model, metric_optimize, mode_sampling, optim, learning_rate,
                          weight_decay, inf_lr, n_steps_inf, label_dim, loss_fn)
 
-    def generate_output(self, x, gt_labels):
+    def generate_output(self, x,  training: bool, gt_labels: Optional[torch.Tensor] = None):
         """
         Generate an output y to compute
         the loss v(y, y*) --> we can use different
@@ -66,34 +67,19 @@ class DVNMultiLabel(DeepValueNetwork):
         2) Generating adversarial tuples
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
-        if self.using_adv_sampling() and self.training and np.random.rand() >= 0.5:
+        if self.using_adv_sampling() and training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
-            pred_labels = self.inference(x, init_labels, gt_labels=gt_labels, n_steps=1)
-        elif self.using_gt_sampling() and self.training and np.random.rand() >= 0.5:
+            pred_labels = self.inference(x, init_labels, training, gt_labels=gt_labels, n_steps=1)
+        elif self.using_gt_sampling() and training and np.random.rand() >= 0.5:
             # In training: If gt_sampling=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
         else:
             init_labels = self.get_ini_labels(x)
-            pred_labels = self.inference(x, init_labels)
+            pred_labels = self.inference(x, init_labels, training)
 
         return pred_labels
-
-    def inference(self, x, y, gt_labels=None, n_steps=20) -> torch.Tensor:
-        if self.training:
-            self.model.eval()
-
-        optim_inf = SGD(y, lr=self.inf_lr, momentum=self.momentum_inf)
-
-        with torch.enable_grad():
-            for i in range(n_steps):
-                y = self._loop_inference(gt_labels, x, y, optim_inf)
-
-        if self.training:
-            self.model.train()
-
-        return y
 
 
 def run_test_set(path_data: str, path_save: str, mode_sampling: str):
