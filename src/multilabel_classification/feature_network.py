@@ -1,6 +1,8 @@
+import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.data import DataLoader
 import numpy as np
 import os
 
@@ -13,10 +15,10 @@ from src.multilabel_classification.model.feature_mlp import FeatureMLP
 
 
 # Parameters to reproduce the baseline results of the SPEN paper
-params_baseline = {'epochs': 20, 'optim': 'adam', 'lr': 1e-3,
+params_baseline = {'epochs': 20, 'optim': 'adam', 'lr': 1e-3, "batch_size": 32,
                    'momentum': 0, 'scheduler': 15, 'weight_decay': 1e-5}
 # Parameters to do feature extraction for pretraining of SPEN
-params_feature_extraction = {'epochs': 10, 'optim': 'adam', 'lr': 1e-3,
+params_feature_extraction = {'epochs': 10, 'optim': 'adam', 'lr': 1e-3, "batch_size": 32,
                              'momentum': 0, 'scheduler': 20, 'weight_decay': 0}
 
 FILE_FEATURE_NETWORK = "feature_network.pth"
@@ -113,22 +115,19 @@ class FeatureNetwork(BaseModel):
         return self.valid(loader)
 
 
-def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, use_cuda: bool):
+def run_the_model(f_net: FeatureNetwork, path_save: str, use_cuda: bool,
+                  batch_size: int, n_epochs: int, step_size_scheduler: int):
 
-    train_loader, valid_loader = load_training_set_bibtex(path_data, path_save, use_cuda,
-                                                          batch_size=32, shuffle=False)
+    results = {'name': 'MLP_Baseline', 'loss_train': [],
+               'loss_valid': [], 'f1_valid': []}
 
-    if do_feature_extraction:
-        params = params_feature_extraction
-    else:
-        params = params_baseline
+    train_loader, valid_loader = load_training_set_bibtex(
+        PATH_BIBTEX, path_save, use_cuda, batch_size=batch_size, shuffle=False
+    )
 
-    f_net = FeatureNetwork(lr=params['lr'], momentum=params['momentum'],
-                           optimizer=params['optim'], weight_decay=params['weight_decay'])
-
-    results = {'name': 'MLP_Baseline', 'loss_train': [], 'loss_valid': [], 'f1_valid': []}
-
-    scheduler = torch.optim.lr_scheduler.StepLR(f_net.optimizer, step_size=params['scheduler'], gamma=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        f_net.optimizer, step_size=step_size_scheduler, gamma=0.1
+    )
 
     train_for_num_epochs(
         f_net,
@@ -136,7 +135,7 @@ def run_the_model(do_feature_extraction: bool, path_data: str, path_save: str, u
         valid_loader,
         os.path.join(path_save, FILE_FEATURE_NETWORK),
         os.path.join(path_save, FILE_RESULTS_FEAT_NETWORK),
-        params['epochs'],
+        n_epochs,
         results,
         scheduler
     )
@@ -154,12 +153,35 @@ def main():
     # If a GPU is available, use it
     use_cuda = torch.cuda.is_available()
 
-    feature_extraction = True
+    parser = argparse.ArgumentParser(description='DVN Img Segmentation')
 
-    run_the_model(feature_extraction, path_data=PATH_BIBTEX,
-                  path_save=PATH_MODELS_ML_BIB, use_cuda=use_cuda)
+    parser.add_argument('--train', type=bool, default=True,
+                        help='If set to true train model, else show predictions/results on test set')
 
-    run_test_set(PATH_BIBTEX, PATH_MODELS_ML_BIB, use_cuda)
+    parser.add_argument('--path_save', type=str, default=PATH_MODELS_ML_BIB,
+                        help='path where to save the models')
+
+    parser.add_argument('--feature_extraction', type=bool, default=True,
+                        help='If set to true, use the hyperparameters to reproduce feature extraction of'
+                             'SPEN paper, else use best hyparameters for training')
+
+    args = parser.parse_args()
+
+    if args.feature_extraction:
+        params = params_feature_extraction
+    else:
+        params = params_baseline
+
+    f_net = FeatureNetwork(
+        lr=params['lr'], momentum=params['momentum'],
+        optimizer=params['optim'], weight_decay=params['weight_decay']
+    )
+
+    if args.train:
+        run_the_model(f_net, PATH_MODELS_ML_BIB, use_cuda, params['batch_size'],
+                      params['epochs'], params['scheduler'])
+    else:
+        run_test_set(PATH_BIBTEX, PATH_MODELS_ML_BIB, use_cuda)
 
 
 if __name__ == "__main__":

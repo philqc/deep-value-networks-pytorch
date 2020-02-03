@@ -24,7 +24,3 @@ jobs:
     - name: Lint
       run: |
         ./scripts/lint.sh
-    - name: Test with pytest
-      run: |
-        pip install pytest
-        python -m pytest

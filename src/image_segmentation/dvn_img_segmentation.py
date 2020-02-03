@@ -151,10 +151,10 @@ def run_test_set(dvn: DVNHorse, valid_loader: DataLoader, path_best_model: str):
 def main():
     parser = argparse.ArgumentParser(description='DVN Img Segmentation')
 
-    parser.add_argument('--train', type=bool, default=False,
+    parser.add_argument('--train', type=bool, default=True,
                         help='If set to true train model, else show predictions/results on test set')
 
-    parser.add_argument('--path_best_model', type=str, default=os.path.join(PATH_SAVE_HORSE, "dvn_whorse0.pth"),
+    parser.add_argument('--path_best_model', type=str, default=None,
                         help='If running on test set, need to provide path for model')
 
     parser.add_argument('--batch_size', type=int, default=16, help='batch size for training')
