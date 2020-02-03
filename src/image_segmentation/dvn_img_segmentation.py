@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 import random
 import pickle
 
-from src.utils import Sampling, SGD, create_path_that_doesnt_exist
+from src.utils import SGD, create_path_that_doesnt_exist
 from src.visualization_utils import plot_results
 from src.model.deep_value_network import DeepValueNetwork
 from .utils import (
@@ -19,14 +19,12 @@ __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
 class DVNHorse(DeepValueNetwork):
 
-    def __init__(self, use_cuda, metric_optimize: str, optim: str, loss_fn: str,
-                 mode_sampling=Sampling.GT, learning_rate=0.01, weight_decay=1e-3, shuffle_n_size=False, inf_lr=50,
-                 momentum_inf=0, label_dim=(24, 24), n_steps_inf=30, n_steps_adv=1):
+    def __init__(self, metric_optimize: str, optim: str, loss_fn: str,
+                 mode_sampling=DeepValueNetwork.Sampling_GT, learning_rate=0.01, weight_decay=1e-3,
+                 shuffle_n_size=False, inf_lr=50, momentum_inf=0, label_dim=(24, 24), n_steps_inf=30, n_steps_adv=1):
         """
         Parameters
         ----------
-        use_cuda: boolean
-            true if we are using gpu, false if using cpu
         learning_rate : float
             learning rate for updating the value network parameters
             default: 0.01 in DVN paper
@@ -45,7 +43,7 @@ class DVNHorse(DeepValueNetwork):
         # Deep Value Network is just a ConvNet
         model = ConvNet()
 
-        super().__init__(model, metric_optimize, use_cuda, mode_sampling, optim, learning_rate, weight_decay,
+        super().__init__(model, metric_optimize, mode_sampling, optim, learning_rate, weight_decay,
                          inf_lr, n_steps_inf, label_dim, loss_fn)
 
         # Inference hyperparameters
@@ -64,12 +62,12 @@ class DVNHorse(DeepValueNetwork):
         2) Generating adversarial tuples
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
-        if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
+        if self.using_adv_sampling() and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             # n_steps = random.randint(1, self.n_steps_adv)
             pred_labels = self.inference(x, init_labels, n_steps=self.n_steps_adv, gt_labels=gt_labels)
-        elif self.mode_sampling == Sampling.GT and self.training and np.random.rand() >= 0.5:
+        elif self.using_gt_sampling()and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
@@ -143,12 +141,12 @@ class DVNHorse(DeepValueNetwork):
         return mean_iou
 
 
-def run_the_model(train_loader: DataLoader, valid_loader: DataLoader, path_save: str, use_cuda: bool,
-                  save_model: bool, n_epochs: int, mode_sampling=Sampling.GT, shuffle_n_size=False,
+def run_the_model(train_loader: DataLoader, valid_loader: DataLoader, path_save: str,
+                  save_model: bool, n_epochs: int, mode_sampling=DeepValueNetwork.Sampling_GT, shuffle_n_size=False,
                   learning_rate=0.01, weight_decay=1e-3, inf_lr=50., momentum_inf=0, n_steps_inf=30, n_steps_adv=1,
                   step_size_scheduler_main=300, gamma_scheduler_main=1.):
 
-    dvn = DVNHorse(use_cuda, metric_optimize="iou", mode_sampling=mode_sampling, shuffle_n_size=shuffle_n_size,
+    dvn = DVNHorse(metric_optimize="iou", mode_sampling=mode_sampling, shuffle_n_size=shuffle_n_size,
                    learning_rate=learning_rate, weight_decay=weight_decay, inf_lr=inf_lr,
                    momentum_inf=momentum_inf, n_steps_inf=n_steps_inf, n_steps_adv=n_steps_adv,
                    optim="adam", loss_fn="bce")
@@ -196,10 +194,10 @@ def start():
 
     train_loader, valid_loader = load_train_set_horse(PATH_DATA_WEIZMANN, use_cuda,
                                                       batch_size=1, batch_size_valid=20)
-    mode_sampling = Sampling.ADV
+    mode_sampling = DeepValueNetwork.Sampling_Adv
 
     # Run the model
-    run_the_model(train_loader, valid_loader, PATH_SAVE_HORSE, use_cuda, save_model=True,
+    run_the_model(train_loader, valid_loader, PATH_SAVE_HORSE, save_model=True,
                   n_epochs=1000, mode_sampling=mode_sampling, shuffle_n_size=False, learning_rate=1e-4,
                   weight_decay=1e-5, inf_lr=5e3, momentum_inf=0, n_steps_inf=30,
                   n_steps_adv=3, step_size_scheduler_main=800, gamma_scheduler_main=0.10)
@@ -213,7 +211,7 @@ def run_test_set(path_best_model: str):
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    dvn = DVNHorse(use_cuda, mode_sampling=Sampling.ADV, learning_rate=1e-4, weight_decay=1e-3,
+    dvn = DVNHorse(use_cuda, mode_sampling=DeepValueNetwork.Sampling_Adv, learning_rate=1e-4, weight_decay=1e-3,
                    inf_lr=5e2, n_steps_inf=30, n_steps_adv=3, metric_optimize="iou", optim="adam", loss_fn="bce")
 
     dvn.model = ConvNet().to(device)

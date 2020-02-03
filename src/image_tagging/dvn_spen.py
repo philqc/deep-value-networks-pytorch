@@ -7,8 +7,9 @@ import os
 import pickle
 
 from src.model.deep_value_network import DeepValueNetwork
+from src.model.spen import SPEN
 from src.visualization_utils import plot_results
-from src.utils import Sampling, SGD, create_path_that_doesnt_exist, project_root
+from src.utils import SGD, create_path_that_doesnt_exist, project_root
 from .utils import calculate_hamming_loss, plot_hamming_loss, load_train_dataset_flickr
 from .load_flickr import visualize_predictions
 from .model.top_layer import TopLayer
@@ -19,15 +20,13 @@ PATH_FLICKR = os.path.join(project_root(), "data", "flickr")
 
 class DVNImgTagging(DeepValueNetwork):
 
-    def __init__(self, use_top_layer, use_unary, use_features, use_cuda,
-                 metric_optimize: str, optim: str, loss_fn: str, mode_sampling=Sampling.GT, add_second_layer=False,
-                 learning_rate=0.01, momentum=0, weight_decay=1e-4, shuffle_n_size=False, inf_lr=0.50, num_hidden=48,
-                 num_pairwise=32, label_dim=24, n_steps_inf=30, n_steps_adv=1):
+    def __init__(self, use_top_layer, use_unary, use_features,
+                 metric_optimize: str, optim: str, loss_fn: str, mode_sampling=DeepValueNetwork.Sampling_GT,
+                 add_second_layer=False, learning_rate=0.01, momentum=0, weight_decay=1e-4, shuffle_n_size=False,
+                 inf_lr=0.50, num_hidden=48, num_pairwise=32, label_dim=24, n_steps_inf=30, n_steps_adv=1):
         """
         Parameters
         ----------
-        use_cuda: boolean
-            true if we are using gpu, false if using cpu
         learning_rate : float
             learning rate for updating the value network parameters
             default: 0.01 in DVN paper
@@ -47,7 +46,7 @@ class DVNImgTagging(DeepValueNetwork):
         model = ConvNet(use_unary, use_features, label_dim, num_hidden,
                         num_pairwise, add_second_layer)
 
-        super().__init__(model, metric_optimize, use_cuda, mode_sampling, optim, learning_rate, weight_decay,
+        super().__init__(model, metric_optimize, mode_sampling, optim, learning_rate, weight_decay,
                          inf_lr, n_steps_inf, label_dim, loss_fn, momentum=momentum)
 
         self.use_features = use_features
@@ -70,12 +69,12 @@ class DVNImgTagging(DeepValueNetwork):
         3) TODO: Stratified Sampling: Random samples from Y, biased towards y*
         """
         using_inference = False
-        if self.mode_sampling == Sampling.ADV and self.training and np.random.rand() >= 0.5:
+        if self.using_adv_sampling() and self.training and np.random.rand() >= 0.5:
             # In training: Generate adversarial examples 50% of the time
             init_labels = self.get_ini_labels(x, gt_labels=gt_labels)
             # n_steps = random.randint(1, self.n_steps_adv)
             pred_labels = self.inference(x, init_labels, n_steps=self.n_steps_adv, gt_labels=gt_labels)
-        elif self.mode_sampling == Sampling.GT and self.training and np.random.rand() >= 0.5:
+        elif self.using_gt_sampling() and self.training and np.random.rand() >= 0.5:
             # In training: If add_ground_truth=True, add ground truth outputs
             # to provide some positive examples to the network
             pred_labels = gt_labels
@@ -236,21 +235,16 @@ class DVNImgTagging(DeepValueNetwork):
 
         return t_loss.item(), t_hamming_loss, mean_f1
 
-    def test(self, loader):
-        return self.valid(loader)
 
+class SPENImgTagging(SPEN):
 
-class SPEN(DeepValueNetwork):
-
-    def __init__(self, use_top_layer: bool, use_unary: bool, use_features: bool, use_cuda: bool,
-                 metric_optimize: str, mode_sampling: str, optim: str, loss_fn: str, add_second_layer=False,
-                 learning_rate=0.01, momentum=0, weight_decay=1e-4, inf_lr=0.50, momentum_inf=0, num_hidden=48,
-                 num_pairwise=32, label_dim=24, n_steps_inf=30):
+    def __init__(self, use_top_layer: bool, use_unary: bool, use_features: bool,
+                 optim: str, loss_fn: str, add_second_layer=False, learning_rate=0.01,
+                 momentum=0, weight_decay=1e-4, inf_lr=0.50, momentum_inf=0, num_hidden=48, num_pairwise=32,
+                 label_dim=24, n_steps_inf=30):
         """
         Parameters
         ----------
-        use_cuda: boolean
-            true if we are using gpu, false if using cpu
         learning_rate : float
             learning rate for updating the value network parameters
             default: 0.01 in DVN paper
@@ -264,25 +258,19 @@ class SPEN(DeepValueNetwork):
             model = ConvNet(use_unary, use_features, label_dim, num_hidden,
                             num_pairwise, add_second_layer).to(self.device)
 
-        super().__init__(model, metric_optimize, use_cuda, mode_sampling, optim, learning_rate, weight_decay,
-                         inf_lr, n_steps_inf, label_dim, loss_fn, momentum, momentum_inf)
+        super().__init__(model, use_cuda, optim, learning_rate, weight_decay, inf_lr, n_steps_inf, label_dim,
+                         loss_fn, momentum, momentum_inf)
 
         self.use_features = use_features
         self.use_unary = use_unary
         self.use_top_layer = use_top_layer
 
-    def generate_output(self, x, gt_labels):
-        if self.use_top_layer:
-            init_labels = x
-        else:
-            init_labels = self.get_ini_labels(x)
-        return self.inference(x, init_labels, gt_labels=gt_labels, n_steps=self.n_steps_inf)
-
-    def inference(self, x, y_pred, gt_labels=None, n_steps=20):
+    def inference(self, x, n_steps: int):
 
         if self.training:
             self.model.eval()
 
+        y_pred = self.get_ini_labels(x)
         optim_inf = SGD(y_pred, lr=self.inf_lr, momentum=self.momentum_inf)
 
         with torch.enable_grad():
@@ -293,17 +281,8 @@ class SPEN(DeepValueNetwork):
                 else:
                     pred_energy = self.model(x, y_pred)
 
-                # Max-margin surrogate objective (with E(ground_truth) missing)
-                loss = pred_energy - self.loss_fn(y_pred, gt_labels)
-
-                grad = torch.autograd.grad(loss, y_pred, grad_outputs=torch.ones_like(loss),
-                                           only_inputs=True)
-                y_grad = grad[0].detach()
-                # Gradient descent to find the y_prediction that minimizes the energy
-                y_pred = y_pred - optim_inf.update(y_grad)
-
-                # Project back to the valid range
-                y_pred = torch.clamp(y_pred, 0, 1)
+                # Update y_pred
+                y_pred = self._loop_inference(pred_energy, y_pred, optim_inf)
 
         if self.training:
             self.model.train()
@@ -311,7 +290,7 @@ class SPEN(DeepValueNetwork):
         return y_pred
 
     def _compute_loss(self, inputs, targets):
-        pred_labels = self.generate_output(inputs, targets)
+        pred_labels = self.inference(inputs, self.n_steps_inf)
 
         if self.use_top_layer:
             pred_energy = self.model(inputs)
@@ -424,14 +403,10 @@ class SPEN(DeepValueNetwork):
 
         return t_loss, t_hamming_loss, mean_f1
 
-    def test(self, loader):
-        return self.valid(loader)
-
 
 def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
                   valid_loader: DataLoader, path_save: str, use_cuda):
-
-    mode_sampling = Sampling.ADV
+    mode_sampling = DeepValueNetwork.Sampling_Adv
 
     use_top_layer = False
     if use_top_layer:
@@ -439,7 +414,7 @@ def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
 
     use_dvn = False
     if use_dvn:
-        energy_network = DVNImgTagging(use_top_layer, use_unary, use_features, use_cuda,
+        energy_network = DVNImgTagging(use_top_layer, use_unary, use_features,
                                        add_second_layer=False, shuffle_n_size=False,
                                        learning_rate=1e-5, momentum=0, weight_decay=0, inf_lr=10.,
                                        num_hidden=12, num_pairwise=32, n_steps_inf=20, n_steps_adv=1,
@@ -447,11 +422,10 @@ def run_the_model(use_unary: bool, use_features: bool, train_loader: DataLoader,
                                        optim="adam")
         str_res = "dvn_" + mode_sampling
     else:
-        energy_network = SPEN(use_top_layer, use_unary, use_features, use_cuda,
-                              add_second_layer=False, learning_rate=3e-2, momentum=0, weight_decay=1e-4,
-                              inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16, label_dim=24,
-                              n_steps_inf=30, mode_sampling=mode_sampling, loss_fn="mse",
-                              metric_optimize="hamming", optim="adam")
+        energy_network = SPENImgTagging(use_top_layer, use_unary, use_features,
+                                        add_second_layer=False, learning_rate=3e-2, momentum=0, weight_decay=1e-4,
+                                        inf_lr=0.5, momentum_inf=0, num_hidden=1152, num_pairwise=16, label_dim=24,
+                                        n_steps_inf=30, loss_fn="mse", optim="adam")
         str_res = 'spen'
 
     print('Using {}'.format(str_res))

@@ -74,7 +74,7 @@ def plot_aggregate_results(results_path, iou, add_title=''):
        ----------
        iou: bool
          if true: print IOU, else print F1 Score
-       """
+    """
 
     str_score = 'IOU' if iou else 'F1 Score'
 

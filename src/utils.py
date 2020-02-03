@@ -4,12 +4,6 @@ from pathlib import Path
 import os
 
 
-class Sampling:
-    GT = "Ground_Truth"
-    ADV = "Adversarial"
-    STRAT = "Stratified"
-
-
 class SGD:
 
     def __init__(self, params, lr=0.5, momentum=0., weight_decay=0.0):
@@ -54,14 +48,9 @@ def project_root() -> Path:
     return Path(__file__).parent.parent
 
 
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters())
-
-
 def create_path_that_doesnt_exist(path_save: str,  file_name: str, extension: str):
     if not os.path.isdir(path_save):
         os.makedirs(path_save)
-
     # Increment a counter so that previous results with the same args will not
     # be overwritten. Comment out the next four lines if you only want to keep
     # the most recent results.

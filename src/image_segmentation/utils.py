@@ -34,8 +34,7 @@ def load_train_set_horse(path_data: str, use_cuda: bool, batch_size: int,
         pin_memory=use_cuda
     )
 
-    print('Using a {} train {} validation split'
-          ''.format(len(train_loader.dataset), len(valid_loader.dataset)))
+    print(f'Using a {len(train_loader.dataset)}/{len(valid_loader.dataset)} train/validation split')
 
     return train_loader, valid_loader
 
@@ -110,8 +109,7 @@ def get_iou_batch(y_pred, y_true):
     return scores
 
 
-def get_iou(y_pred, y_true):
-    # y_pred and y_true are all "torch tensor"
+def get_iou(y_pred: torch.Tensor, y_true: torch.Tensor):
     y_pred = torch.flatten(y_pred).reshape(1, -1)
     y_true = torch.flatten(y_true).reshape(1, -1)
 

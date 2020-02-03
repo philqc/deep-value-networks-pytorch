@@ -1,13 +1,17 @@
 import arff
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from sklearn.metrics import f1_score
 import os
+import pickle
 import random
-from typing import Tuple
+from typing import Tuple, Dict
 
+from src.model.base_model import BaseModel
 from src.utils import project_root, MyDataset
+from src.visualization_utils import plot_results
 
 PATH_MODELS_ML_BIB = os.path.join(project_root(), "saved_results", "bibtex")
 PATH_BIBTEX = os.path.join(project_root(), "data", "bibtex")
@@ -78,7 +82,7 @@ def load_training_set_bibtex(path_data: str, path_save: str, use_cuda: bool, bat
         pin_memory=use_cuda
     )
 
-    print('Using a {} train {} validation split'.format(n_train, len(train_inputs) - n_train))
+    print(f'Using a {n_train}/{len(train_inputs) - n_train} train/validation split')
     return train_loader, valid_loader
 
 
@@ -136,3 +140,28 @@ def compute_f1_score(labels, outputs):
     for i in range(len(outputs)):
         f1.append(f1_score(labels[i], outputs[i]))
     return f1
+
+
+def train_for_num_epochs(meta_model: BaseModel, train_loader: DataLoader, valid_loader: DataLoader,
+                         path_save_model: str, path_save_results: str, n_epochs: int,
+                         results: Dict, scheduler: torch.optim.lr_scheduler.StepLR):
+    best_val_found = 0
+
+    for epoch in range(n_epochs):
+        print(f"Epoch {epoch}")
+        loss_train = meta_model.train(train_loader)
+        loss_valid, f1_valid = meta_model.valid(valid_loader)
+        scheduler.step()
+        results['loss_train'].append(loss_train)
+        results['loss_valid'].append(loss_valid)
+        results['f1_valid'].append(f1_valid)
+
+        with open(path_save_results, 'wb') as fout:
+            pickle.dump(results, fout)
+
+        if f1_valid > best_val_found:
+            best_val_found = f1_valid
+            print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_val_found))
+            torch.save(meta_model.model.state_dict(), path_save_model)
+
+    plot_results(results, iou=False)

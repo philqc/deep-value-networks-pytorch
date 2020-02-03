@@ -1,24 +1,30 @@
 import torch
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 import time
 from typing import Union, Tuple
-from .base_model import BaseModel
-from src.utils import SGD, Sampling
+from .energy_model import EnergyModel
 
 
-class DeepValueNetwork(BaseModel):
+class DeepValueNetwork(EnergyModel):
 
-    def __init__(self, torch_model, metric_optimize: str, use_cuda: bool, mode_sampling: str, optim: str,
+    Sampling_GT = "ground_truth"
+    Sampling_Adv = "adversarial"
+    Sampling_Strat = "stratified"
+
+    def __init__(self, torch_model, metric_optimize: str, mode_sampling: str, optim: str,
                  learning_rate: float, weight_decay: float, inf_lr: float, n_steps_inf: int,
-                 label_dim: Union[int, Tuple[int]], loss_fn: str, momentum: float, momentum_inf: float = 0.0):
+                 label_dim: Union[int, Tuple[int]], loss_fn: str, momentum: float = 0., momentum_inf: float = 0.):
+
+        super().__init__(torch_model, optim, learning_rate, weight_decay, inf_lr,
+                         n_steps_inf, label_dim, loss_fn, momentum, momentum_inf)
 
         self.mode_sampling = mode_sampling
-        if self.mode_sampling == Sampling.STRAT:
+        if mode_sampling == self.Sampling_Strat:
             raise NotImplementedError('Stratified sampling is not yet implemented!')
-        elif self.mode_sampling in [Sampling.GT, Sampling.ADV]:
-            print(f'Using {self.mode_sampling} Sampling')
+        elif mode_sampling in [self.Sampling_GT, self.Sampling_Adv]:
+            print(f'Using {mode_sampling} sampling')
         else:
-            raise ValueError(f'Invalid sampling strategy = {self.mode_sampling}')
+            raise ValueError(f'Invalid sampling strategy = {mode_sampling}')
 
         self.use_hamming_metric = False
         if metric_optimize.lower() == "f1":
@@ -34,50 +40,9 @@ class DeepValueNetwork(BaseModel):
         else:
             raise ValueError(f"Invalid metric_optimize provided = {metric_optimize}")
 
-        if loss_fn.lower() == "bce":
-            self.loss_fn = torch.nn.BCEWithLogitsLoss()
-            self.use_bce = True
-            print('Using Binary Cross Entropy with Logits Loss')
-        elif loss_fn.lower() == "mse":
-            self.loss_fn = torch.nn.MSELoss()
-            self.use_bce = False
-            print('Using Mean Squared Error Loss')
-        else:
-            raise ValueError(f"Invalid loss_fn provided = {loss_fn}")
-
-        # Inference hyperparameters
-        self.inf_lr = inf_lr
-        self.n_steps_inf = n_steps_inf
-        self.momentum_inf = momentum_inf
-        ############################
-
-        self.new_ep = True
-        self.device = torch.device("cuda" if use_cuda else "cpu")
-        self.label_dim = label_dim
-        self.training = False
-
-        # Model and optimizer
-        self.model = torch_model.to(self.device)
-        if optim.lower() == 'sgd':
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate,
-                                             momentum=momentum, weight_decay=weight_decay)
-        elif optim.lower() == 'adam':
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        else:
-            raise ValueError(f'Invalid optimizer provided: {optim}')
-
     @abstractmethod
     def generate_output(self, x, gt_labels):
         pass
-
-    def _get_tensor_init_labels(self, x):
-        if isinstance(self.label_dim, Tuple):
-            # image or other 2D input
-            return torch.zeros(x.size()[0], 1, self.label_dim[0], self.label_dim[1],
-                               dtype=torch.float32, device=self.device)
-        else:
-            # 1D input
-            return torch.zeros(x.size()[0], self.label_dim, dtype=torch.float32, device=self.device)
 
     def get_ini_labels(self, x, gt_labels=None):
         """
@@ -94,75 +59,6 @@ class DeepValueNetwork(BaseModel):
         # Set requires_grad=True after in_place operation (changing the indices)
         y.requires_grad = True
         return y
-
-    def _adjust_labels(self, pred_labels, gt_labels):
-        if pred_labels.shape != gt_labels.shape:
-            raise ValueError('Invalid labels shape: gt = ', gt_labels.shape, 'pred = ', pred_labels.shape)
-
-        if not self.training:
-            # No relaxation, 0-1 only
-            pred_labels = torch.where(pred_labels >= 0.5,
-                                      torch.ones(1).to(self.device),
-                                      torch.zeros(1).to(self.device))
-            pred_labels = pred_labels.float()
-        return pred_labels, gt_labels
-
-    def _f1_score(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the F1 Score when training.
-        and the discrete F1 when validating/testing
-        """
-        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        # Add epsilon also in numerator since some images have 0 tags
-        # and then we get 0/0 --> = nan instead of f1=1
-        f1 = (2 * intersect + epsilon) / (intersect + torch.max(epsilon, union))
-        # we want a (Batch_size x 1) tensor
-        f1 = f1.view(-1, 1)
-        return f1
-
-    def _iou_score(self, pred_labels, gt_labels):
-        """
-        Compute the ground truth value, i.e. v*(y, y*)
-        of some predicted labels, where v*(y, y*)
-        is the relaxed version of the IOU (intersection
-        over union) when training, and the discrete IOU
-        when validating/testing
-        """
-        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
-
-        pred_labels = torch.flatten(pred_labels).reshape(pred_labels.size()[0], -1)
-        gt_labels = torch.flatten(gt_labels).reshape(gt_labels.size()[0], -1)
-
-        intersect = torch.sum(torch.min(pred_labels, gt_labels), dim=1)
-        union = torch.sum(torch.max(pred_labels, gt_labels), dim=1)
-
-        # for numerical stability
-        epsilon = torch.full(union.size(), 10 ** -8).to(self.device)
-
-        iou = intersect / torch.max(epsilon, union)
-        # we want a (Batch_size x 1) tensor
-        iou = iou.view(-1, 1)
-        return iou
-
-    def _scaled_hamming_loss(self, pred_labels, gt_labels):
-        """ Scaled Hamming Loss """
-        pred_labels, gt_labels = self._adjust_labels(pred_labels, gt_labels)
-        # Hamming Loss in 0-1
-        loss = torch.sum(torch.abs(gt_labels - pred_labels), dim=1)
-        if self.use_bce:
-            # TODO: Change this constant
-            loss /= 24.
-        loss = loss.view(-1, 1)
-        return loss
 
     def _loop_inference(self, gt_labels, x, y, optim_inf) -> torch.Tensor:
         if gt_labels is not None:  # Adversarial
@@ -271,6 +167,14 @@ class DeepValueNetwork(BaseModel):
 
         return loss.item(), mean_oracle
 
-    @abstractmethod
     def test(self, loader):
-        pass
+        return self.valid(loader)
+
+    def using_adv_sampling(self):
+        return self.mode_sampling == self.Sampling_Adv
+
+    def using_gt_sampling(self):
+        return self.mode_sampling == self.Sampling_GT
+
+    def using_strat_sampling(self):
+        return self.mode_sampling == self.Sampling_Strat

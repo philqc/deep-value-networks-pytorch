@@ -142,6 +142,31 @@ def test(model, loader, device):
     return mean_iou
 
 
+def plot_loss_iou(n_epochs: int, train_loss, valid_loss, train_iou, valid_iou) -> None:
+    x = list(range(1, n_epochs + 1))
+    # plot train/validation loss versus epoch
+    plt.figure()
+    plt.title("Train/Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Total Loss")
+    plt.plot(x, train_loss, label="train loss")
+    plt.plot(x, valid_loss, color='red', label="validation loss")
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show()
+
+    # plot train/validation loss versus epoch
+    plt.figure()
+    plt.title("Train/Validation IOU")
+    plt.xlabel("Epochs")
+    plt.ylabel("Mean IOU")
+    plt.plot(x, train_iou, label="train iou")
+    plt.plot(x, valid_iou, color='red', label="validation iou")
+    plt.legend(loc='upper right')
+    plt.grid(True)
+    plt.show()
+
+
 def main():
     # Version of Pytorch
     print("Pytorch Version:", torch.__version__)
@@ -169,6 +194,7 @@ def main():
                         help='For Saving the current Model')
     args = parser.parse_args()
 
+    n_epochs = args.epochs
     # Use GPU if it is available
     use_cuda = torch.cuda.is_available()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -194,7 +220,7 @@ def main():
 
     start_time = time.time()
     # Start Training
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, n_epochs + 1):
         # train loss
         t_loss, t_mean_iou = train(model, device, train_loader, optimizer)
         print('Train Epoch: {} \t Loss: {:.6f}\t Mean_IOU(%):{}%'.format(
@@ -217,30 +243,10 @@ def main():
         print('-------------------------------------------------------')
 
     print("--- %s seconds ---" % (time.time() - start_time))
-    print("training:", len(train_loader))
-    print("validation:", len(valid_loader))
-    x = list(range(1, args.epochs + 1))
-    # plot train/validation loss versus epoch
-    plt.figure()
-    plt.title("Train/Validation Loss")
-    plt.xlabel("Epochs")
-    plt.ylabel("Total Loss")
-    plt.plot(x, train_loss, label="train loss")
-    plt.plot(x, validation_loss, color='red', label="validation loss")
-    plt.legend(loc='upper right')
-    plt.grid(True)
-    plt.show()
 
-    # plot train/validation loss versus epoch
-    plt.figure()
-    plt.title("Train/Validation IOU")
-    plt.xlabel("Epochs")
-    plt.ylabel("Mean IOU")
-    plt.plot(x, train_iou, label="train iou")
-    plt.plot(x, validation_iou, color='red', label="validation iou")
-    plt.legend(loc='upper right')
-    plt.grid(True)
-    plt.show()
+    # Visualization
+    plot_loss_iou(n_epochs, train_loss, validation_loss,
+                  train_iou, validation_iou)
 
     # test set
     print("Best Validation Mean IOU:", best_val_iou)

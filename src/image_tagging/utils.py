@@ -3,7 +3,7 @@ import torch
 import os
 from typing import Tuple
 from torch.utils.data import DataLoader
-from .load_flickr import FlickrTaggingDatasetFeatures, FlickrTaggingDataset, inv_normalize
+from .load_flickr import FlickrTaggingDatasetFeatures, FlickrTaggingDataset
 
 
 train_label_file = 'train_labels_1k.pt'
@@ -34,24 +34,18 @@ def load_train_dataset_flickr(
     if use_unary and use_features:
         raise ValueError('Both using features and unary is impossible')
     if use_features:
+        load = True if train_feature_file is not None else False
         print('Using Precomputed Unary Features!')
     elif use_unary:
-        print('Using Precomputed Unary Predictions!')
-
-    if use_features:
-        load = True if train_feature_file is not None else False
-    elif use_unary:
         load = True if train_unary_file is not None else False
+        print('Using Precomputed Unary Predictions!')
     else:
         load = True if train_save_img_file is not None else False
 
     print('Loading training set....')
-    if use_features:
-        train_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=train_feature_file,
-                                                 annotations_folder=label_dir, save_label_file=train_label_file,
-                                                 mode='train', load=load)
-    elif use_unary:
-        train_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=train_unary_file,
+    if use_features or use_unary:
+        feature_file = train_feature_file if use_features else train_unary_file
+        train_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=feature_file,
                                                  annotations_folder=label_dir, save_label_file=train_label_file,
                                                  mode='train', load=load)
     else:
@@ -60,12 +54,9 @@ def load_train_dataset_flickr(
                                          mode='train', load=load)
 
     print('Loading validation set....')
-    if use_features:
-        valid_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=val_feature_file,
-                                                 annotations_folder=label_dir, save_label_file=val_label_file,
-                                                 mode='val', load=load)
-    elif use_unary:
-        valid_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=val_unary_file,
+    if use_features or use_unary:
+        feature_file = val_feature_file if use_features else val_unary_file
+        valid_set = FlickrTaggingDatasetFeatures(type_dataset, images_folder=img_dir, feature_file=feature_file,
                                                  annotations_folder=label_dir, save_label_file=val_label_file,
                                                  mode='val', load=load)
     else:
@@ -73,7 +64,7 @@ def load_train_dataset_flickr(
                                          annotations_folder=label_dir, save_label_file=val_label_file,
                                          mode='val', load=load)
 
-    print(f'Using a {len(train_set)} train {len(valid_set)} validation split')
+    print(f'Using a {len(train_set)}/{len(valid_set)} train/validation split')
 
     train_loader = DataLoader(
         train_set,
@@ -91,8 +82,7 @@ def load_train_dataset_flickr(
 
 
 def calculate_hamming_loss(true_labels, pred_labels):
-    loss = torch.sum(torch.abs(true_labels - pred_labels))
-    return loss
+    return torch.sum(torch.abs(true_labels - pred_labels))
 
 
 def plot_hamming_loss(results):
