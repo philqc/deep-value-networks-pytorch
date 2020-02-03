@@ -7,16 +7,17 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 from torchsummary import summary
-import warnings
+import os
 
-from src.image_segmentation.utils import average_over_crops, show_preds_test_time
-from .utils import get_iou_batch, load_train_set_horse, load_test_set_horse, PATH_DATA_WEIZMANN
-from .model.fcn import FCN
+from src.image_segmentation.weizmann_horse_dataset import (
+    PATH_DATA_WEIZMANN, load_train_set_horse, load_test_set_horse, PATH_SAVE_HORSE
+)
+from src.image_segmentation.utils import average_over_crops, show_preds_test_time, get_iou_batch
+from src.image_segmentation.model.fcn import FCN
 
-warnings.filterwarnings("ignore")
 __author__ = "HSU CHIH-CHAO and Philippe Beardsell. University of Montreal"
 
-FILE_BEST_MODEL = "fcn_best.pth"
+FILE_SAVE_FCN = "fcn_best.pth"
 
 
 def train(model, device, train_loader, optimizer):
@@ -194,6 +195,7 @@ def main():
                         help='For Saving the current Model')
     args = parser.parse_args()
 
+    path_save_model = os.path.join(PATH_SAVE_HORSE, FILE_SAVE_FCN)
     n_epochs = args.epochs
     # Use GPU if it is available
     use_cuda = torch.cuda.is_available()
@@ -238,7 +240,7 @@ def main():
         if v_mean_iou > best_val_iou:
             best_val_iou = v_mean_iou
             print('--- Saving model at IOU_{:.2f} ---'.format(100 * best_val_iou))
-            torch.save(model.state_dict(), FILE_BEST_MODEL)
+            torch.save(model.state_dict(), path_save_model)
 
         print('-------------------------------------------------------')
 
@@ -253,7 +255,7 @@ def main():
 
     # Test on 36 crop
     fcn_test = FCN().to(device)
-    fcn_test.load_state_dict(torch.load(FILE_BEST_MODEL))
+    fcn_test.load_state_dict(torch.load(path_save_model))
     fcn_test.eval()
 
     # Compute IOU single prediction on 24x24 crops and 36 crops averaging on 32x32

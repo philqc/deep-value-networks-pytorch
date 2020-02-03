@@ -2,13 +2,18 @@ import os
 import random
 from skimage import io
 import numpy as np
-from torch.utils.data import Dataset
+from typing import Tuple
+from torch.utils.data import Dataset, DataLoader
 import torch
 from torchvision import transforms
 import torchvision.transforms.functional as TF
 
+from src.utils import project_root
 from src.visualization_utils import show_img
-from .utils import thirty_six_crop
+from src.image_segmentation.utils import thirty_six_crop
+
+PATH_DATA_WEIZMANN = os.path.join(project_root(), "data", "weizmann_horse")
+PATH_SAVE_HORSE = os.path.join(project_root(), "saved_results", "weizmann_horse")
 
 
 class WeizmannHorseDataset(Dataset):
@@ -149,3 +154,46 @@ class WeizmannHorseDataset(Dataset):
             show_img(img_to_show, black_and_white=True)
 
         return mean_imgs, std_imgs, mean_mask
+
+
+def load_train_set_horse(path_data: str, use_cuda: bool, batch_size: int,
+                         batch_size_valid: int) -> Tuple[DataLoader, DataLoader]:
+    image_dir = os.path.join(path_data, 'images')
+    mask_dir = os.path.join(path_data, 'masks')
+
+    train_set = WeizmannHorseDataset(image_dir, mask_dir, subset='train',
+                                     random_mirroring=False, thirty_six_cropping=False)
+    valid_set = WeizmannHorseDataset(image_dir, mask_dir, subset='valid',
+                                     random_mirroring=False, thirty_six_cropping=False)
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        pin_memory=use_cuda
+    )
+
+    valid_loader = DataLoader(
+        valid_set,
+        batch_size=batch_size_valid,
+        pin_memory=use_cuda
+    )
+
+    print(f'Using a {len(train_loader.dataset)}/{len(valid_loader.dataset)} train/validation split')
+
+    return train_loader, valid_loader
+
+
+def load_test_set_horse(path_data: str, use_cuda: bool, batch_size: int,
+                        thirtysix_crops: bool) -> DataLoader:
+    image_dir = os.path.join(path_data, 'images')
+    mask_dir = os.path.join(path_data, 'masks')
+
+    test_set = WeizmannHorseDataset(image_dir, mask_dir, subset='test',
+                                    random_mirroring=False, thirty_six_cropping=thirtysix_crops)
+
+    test_loader = DataLoader(
+        test_set,
+        batch_size=batch_size,
+        pin_memory=use_cuda
+    )
+    return test_loader
