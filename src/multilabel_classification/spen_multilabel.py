@@ -164,11 +164,8 @@ def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
 
     spen = SPENClassification(path_feature_extractor, loss_fn="mse")
 
-    results = {'name': 'spen_bibtex', 'loss_train': [],
-               'loss_valid': [], 'f1_valid': []}
-
-    path_save_results = os.path.join(path_save, results['name'] + '.pkl')
-    path_save_model = os.path.join(path_save, results['name'] + '.pth')
+    name = 'spen_bibtex'
+    path_save_model = os.path.join(path_save, name + '.pth')
 
     scheduler = torch.optim.lr_scheduler.StepLR(spen.optimizer, step_size=10, gamma=0.1)
     n_epochs = 10
@@ -178,9 +175,7 @@ def run_the_model(path_data: str, path_save: str, path_feature_extractor: str):
         train_loader,
         valid_loader,
         path_save_model,
-        path_save_results,
         n_epochs,
-        results,
         scheduler
     )
 

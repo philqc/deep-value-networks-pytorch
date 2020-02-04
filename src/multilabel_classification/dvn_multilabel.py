@@ -123,20 +123,15 @@ def run_the_model(path_data: str, path_save: str, mode_sampling: str):
     scheduler = torch.optim.lr_scheduler.StepLR(dvn.optimizer, step_size=params['n_epochs_reduce'], gamma=0.1)
     total_epochs = int(params['n_epochs_reduce'] * 2.5)
 
-    results = {'name': 'dvn_' + mode_sampling, 'loss_train': [],
-               'loss_valid': [], 'f1_valid': []}
-
-    path_save_results = os.path.join(path_save, results['name'] + '.pkl')
-    path_save_model = os.path.join(path_save, results['name'] + '.pth')
+    name = 'dvn_' + mode_sampling
+    path_save_model = os.path.join(path_save, name + '.pth')
 
     train_for_num_epochs(
         dvn,
         train_loader,
         valid_loader,
         path_save_model,
-        path_save_results,
         total_epochs,
-        results,
         scheduler
     )
 

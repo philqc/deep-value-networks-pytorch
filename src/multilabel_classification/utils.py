@@ -5,9 +5,8 @@ from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from sklearn.metrics import f1_score
 import os
-import pickle
 import random
-from typing import Tuple, Dict
+from typing import Tuple
 
 from src.model.base_model import BaseModel
 from src.utils import project_root, MyDataset
@@ -143,26 +142,23 @@ def compute_f1_score(labels, outputs):
 
 
 def train_for_num_epochs(meta_model: BaseModel, train_loader: DataLoader, valid_loader: DataLoader,
-                         path_save_model: str, path_save_results: str, n_epochs: int,
-                         results: Dict, scheduler: torch.optim.lr_scheduler.StepLR):
+                         path_save_model: str, n_epochs: int, scheduler: torch.optim.lr_scheduler.StepLR):
     best_val_found = 0
 
+    loss_train, loss_valid = [], []
+    list_f1_valid = []
     for epoch in range(n_epochs):
         print(f"Epoch {epoch}")
-        loss_train = meta_model.train(train_loader)
-        loss_valid, f1_valid = meta_model.valid(valid_loader)
+        t_loss = meta_model.train(train_loader)
+        v_loss, f1_valid = meta_model.valid(valid_loader)
         scheduler.step()
-        results['loss_train'].append(loss_train)
-        results['loss_valid'].append(loss_valid)
-        results['f1_valid'].append(f1_valid)
-
-        with open(path_save_results, 'wb') as fout:
-            pickle.dump(results, fout)
+        loss_train.append(t_loss)
+        loss_valid.append(v_loss)
+        list_f1_valid.append(f1_valid)
 
         if f1_valid > best_val_found:
             best_val_found = f1_valid
             print('--- Saving model at F1 = {:.2f} ---'.format(100 * best_val_found))
             torch.save(meta_model.model.state_dict(), path_save_model)
 
-    plot_results("F1 Score", results['loss_train'], results['loss_valid'],
-                 results['f1_valid'], None)
+    plot_results("F1 Score", loss_train, loss_valid, list_f1_valid, None)

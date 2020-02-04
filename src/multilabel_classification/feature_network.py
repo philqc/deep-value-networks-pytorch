@@ -2,7 +2,6 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import numpy as np
 import os
 
@@ -22,7 +21,6 @@ params_feature_extraction = {'epochs': 10, 'optim': 'adam', 'lr': 1e-3, "batch_s
                              'momentum': 0, 'scheduler': 20, 'weight_decay': 0}
 
 FILE_FEATURE_NETWORK = "feature_network.pth"
-FILE_RESULTS_FEAT_NETWORK = "feature_network.pkl"
 PATH_FEATURE_NETWORK = os.path.join(PATH_MODELS_ML_BIB, FILE_FEATURE_NETWORK)
 
 
@@ -118,9 +116,6 @@ class FeatureNetwork(BaseModel):
 def run_the_model(f_net: FeatureNetwork, path_save: str, use_cuda: bool,
                   batch_size: int, n_epochs: int, step_size_scheduler: int):
 
-    results = {'name': 'MLP_Baseline', 'loss_train': [],
-               'loss_valid': [], 'f1_valid': []}
-
     train_loader, valid_loader = load_training_set_bibtex(
         PATH_BIBTEX, path_save, use_cuda, batch_size=batch_size, shuffle=False
     )
@@ -134,9 +129,7 @@ def run_the_model(f_net: FeatureNetwork, path_save: str, use_cuda: bool,
         train_loader,
         valid_loader,
         os.path.join(path_save, FILE_FEATURE_NETWORK),
-        os.path.join(path_save, FILE_RESULTS_FEAT_NETWORK),
         n_epochs,
-        results,
         scheduler
     )
 
@@ -168,8 +161,10 @@ def main():
     args = parser.parse_args()
 
     if args.feature_extraction:
+        print("Running Hyperparameters of MLP for Feature Extraction")
         params = params_feature_extraction
     else:
+        print("Running Hyperparameters of MLP for Baseline")
         params = params_baseline
 
     f_net = FeatureNetwork(
