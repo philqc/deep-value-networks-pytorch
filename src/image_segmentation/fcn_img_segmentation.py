@@ -11,7 +11,7 @@ import os
 from src.image_segmentation.weizmann_horse_dataset import (
     PATH_DATA_WEIZMANN, load_train_set_horse, load_test_set_horse, PATH_SAVE_HORSE
 )
-from src.image_segmentation.utils import average_over_crops, show_preds_test_time, get_iou_batch
+from src.image_segmentation.utils import show_preds_test_time, get_iou_batch
 from src.image_segmentation.model.fcn import FCN
 from src.model.base_model import BaseModel
 from src.visualization_utils import plot_results
@@ -97,44 +97,30 @@ class FCNModel(BaseModel):
         return test_loss / len(loader), total_iou / len(loader)
 
     def test(self, loader: DataLoader, show_n_samples: int = 0):
-        """
-            At Test time, we are averaging our predictions
-            over 36 crops of 24x24 mask to predict a 32x32 mask
-        """
         self.model.eval()
-        mean_iou = []
+        total_iou = 0
+        test_loss = 0
         n_shown = 0
-
         with torch.no_grad():
             for raw_inputs, inputs, targets in loader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
+                targets[targets > 0] = 1
+                output = self.model(inputs)
+                n, c, h, w = output.size()
 
-                # For test: inputs is a 5d tensor
-                bs, ncrops, channels, h, w = inputs.size()
+                pred, loss = self._compute_pred_and_loss(output, targets)
 
-                # fuse batch size and ncrops to know our estimated IOU
-                output = self.model(inputs.view(-1, channels, h, w))
-                log_p = F.log_softmax(output, dim=1)
-                pred = torch.argmax(log_p, dim=1)
-                # go back to normal shape and take the mean in the 1 dim
-                pred = pred.view(bs, ncrops, h, w)
-                # output = output.view(bs, ncrops, h, w)
-
-                final_pred = average_over_crops(pred, self.device)
-                oracle = get_iou_batch(final_pred, targets.float())
-                for o in oracle:
-                    mean_iou.append(o)
+                iou = get_iou_batch(pred, targets.long())
+                total_iou += torch.mean(iou)
+                test_loss += loss.item()
 
                 if n_shown < show_n_samples:
                     n_shown += 1
-                    show_preds_test_time(raw_inputs, final_pred)
+                    pred = pred.view(n, 1, h, w)
+                    show_preds_test_time(raw_inputs, pred)
 
-        mean_iou = torch.stack(mean_iou)
-        mean_iou = torch.mean(mean_iou)
-        mean_iou = mean_iou.cpu().numpy()
-
-        print('Test set: IOU = {:.2f}%'.format(100 * mean_iou))
-        return mean_iou
+        print('Test set: IOU = {:.2f}%'.format(100 * total_iou / len(loader)))
+        return test_loss / len(loader), total_iou / len(loader)
 
     @staticmethod
     def _visualize(iou, inputs, targets, pred):
@@ -147,37 +133,12 @@ class FCNModel(BaseModel):
         plt.imshow(pred[i].to('cpu').numpy())
 
 
-def main():
-    # Training args
-    parser = argparse.ArgumentParser(description='Fully Convolutional Network')
-    parser.add_argument('--batch-size', type=int, default=64, metavar='N',
-                        help='input batch size for training')
-    parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
-                        help='input batch size for testing')
-    parser.add_argument('--epochs', type=int, default=100, metavar='N',
-                        help='number of epochs to train')
-    parser.add_argument('--lr', type=float, default=0.1, metavar='LR',
-                        help='learning rate')
-    parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
-                        help='SGD momentum')
+def run_the_model(fcn: FCNModel, path_save_model: str, use_cuda: bool,
+                  epochs: int, batch_size: int):
 
-    args = parser.parse_args()
-
-    path_save_model = os.path.join(PATH_SAVE_HORSE, FILE_SAVE_FCN)
-    # Use GPU if it is available
-    use_cuda = torch.cuda.is_available()
-    device = torch.device("cuda" if use_cuda else "cpu")
-
-    # Create FCN
-    fcn = FCNModel(args.lr, args.momentum)
-    # print the model summary
-    print(fcn.model)
-
-    # Visualize the output of each layer via torchSummary
-    summary(fcn.model, input_size=(3, 24, 24))
-
-    train_loader, valid_loader = load_train_set_horse(PATH_DATA_WEIZMANN, use_cuda,
-                                                      args.batch_size, args.batch_size)
+    train_loader, valid_loader = load_train_set_horse(
+        PATH_DATA_WEIZMANN, use_cuda, batch_size, batch_size
+    )
 
     train_loss, validation_loss = [], []
     train_iou, validation_iou = [], []
@@ -185,7 +146,7 @@ def main():
 
     start_time = time.time()
     # Start Training
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, epochs + 1):
         # train loss
         t_loss, t_mean_iou = fcn.train(train_loader)
         print('Train Epoch: {} \t Loss: {:.6f}\t Mean_IOU: {:.2f}%'.format(
@@ -214,24 +175,42 @@ def main():
 
     print("Best Validation Mean IOU: {:.2f}%".format(100 * best_val_iou))
 
-    # Test on 36 crop
+
+def run_on_test_set(fcn: FCNModel, path_save_model: str, use_cuda: bool):
+    device = torch.device("cuda" if use_cuda else "cpu")
     fcn.model.load_state_dict(torch.load(path_save_model, map_location=device))
+    test_loader = load_test_set_horse(PATH_DATA_WEIZMANN, use_cuda,
+                                      batch_size=8, thirtysix_crops=False)
+    fcn.test(test_loader, show_n_samples=1)
 
-    # Compute IOU single prediction on 24x24 crops and 36 crops averaging on 32x32
-    for i in range(2):
-        thirtysix_crops = False if i == 0 else True
 
-        test_loader = load_test_set_horse(PATH_DATA_WEIZMANN, use_cuda,
-                                          batch_size=8, thirtysix_crops=thirtysix_crops)
+def main():
+    parser = argparse.ArgumentParser(description='Fully Convolutional Network')
 
-        print('-------------------------------------------')
-        if i == 0:
-            print('Single crop IOU prediction')
-            loss, mean_iou = fcn.valid(valid_loader)
-            print('Validation Mean_IOU: {:.2f}%'.format(mean_iou * 100))
-        else:
-            print('36 Crops IOU prediction')
-            fcn.test(test_loader, show_n_samples=1)
+    parser.add_argument('--train', type=bool, default=False, help='to train or tu run model on test set')
+    parser.add_argument('--batch-size', type=int, default=8, help='input batch size for training')
+    parser.add_argument('--test-batch-size', type=int, default=256, help='input batch size for testing')
+    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+    parser.add_argument('--lr', type=float, default=0.1, help='learning rate')
+    parser.add_argument('--momentum', type=float, default=0.9, help='SGD momentum')
+
+    args = parser.parse_args()
+
+    path_save_model = os.path.join(PATH_SAVE_HORSE, FILE_SAVE_FCN)
+    # Use GPU if it is available
+    use_cuda = torch.cuda.is_available()
+
+    fcn = FCNModel(args.lr, args.momentum)
+    # print the model summary
+    print(fcn.model)
+
+    # Visualize the output of each layer via torchSummary
+    summary(fcn.model, input_size=(3, 24, 24))
+
+    if args.train:
+        run_the_model(fcn, path_save_model, use_cuda, args.epochs, args.batch_size)
+    else:
+        run_on_test_set(fcn, path_save_model, use_cuda)
 
 
 if __name__ == "__main__":

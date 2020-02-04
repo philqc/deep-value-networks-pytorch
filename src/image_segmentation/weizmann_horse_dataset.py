@@ -17,7 +17,8 @@ PATH_SAVE_HORSE = os.path.join(project_root(), "saved_results", "weizmann_horse"
 
 
 class WeizmannHorseDataset(Dataset):
-    def __init__(self, img_dir, mask_dir, subset='train', random_mirroring=True, thirty_six_cropping=False):
+    def __init__(self, img_dir: str, mask_dir: str, subset='train',
+                 random_mirroring=True, thirty_six_cropping=False):
         """
         Args:
             img_dir(string): Path to the image file (training image)
@@ -156,8 +157,10 @@ class WeizmannHorseDataset(Dataset):
         return mean_imgs, std_imgs, mean_mask
 
 
-def load_train_set_horse(path_data: str, use_cuda: bool, batch_size: int,
-                         batch_size_valid: int) -> Tuple[DataLoader, DataLoader]:
+def load_train_set_horse(
+        path_data: str, use_cuda: bool, batch_size: int, batch_size_valid: int
+) -> Tuple[DataLoader, DataLoader]:
+
     image_dir = os.path.join(path_data, 'images')
     mask_dir = os.path.join(path_data, 'masks')
 
@@ -183,14 +186,14 @@ def load_train_set_horse(path_data: str, use_cuda: bool, batch_size: int,
     return train_loader, valid_loader
 
 
-def load_test_set_horse(path_data: str, use_cuda: bool, batch_size: int,
-                        thirtysix_crops: bool) -> DataLoader:
+def load_test_set_horse(
+        path_data: str, use_cuda: bool, batch_size: int, thirtysix_crops: bool
+) -> DataLoader:
     image_dir = os.path.join(path_data, 'images')
     mask_dir = os.path.join(path_data, 'masks')
 
     test_set = WeizmannHorseDataset(image_dir, mask_dir, subset='test',
                                     random_mirroring=False, thirty_six_cropping=thirtysix_crops)
-
     test_loader = DataLoader(
         test_set,
         batch_size=batch_size,

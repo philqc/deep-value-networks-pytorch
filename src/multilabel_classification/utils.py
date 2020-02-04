@@ -49,9 +49,10 @@ def get_bibtex(dir_path: str, use_train: bool):
     return labels, inputs, txt_labels, txt_inputs
 
 
-def load_training_set_bibtex(path_data: str, path_save: str, use_cuda: bool, batch_size=32,
-                             norm_inputs=True, shuffle=True, train_valid_ratio=0.95
-                             ) -> Tuple[DataLoader, DataLoader]:
+def load_training_set_bibtex(
+        path_data: str, path_save: str, use_cuda: bool, batch_size=32,
+        norm_inputs=True, shuffle=True, train_valid_ratio=0.95
+) -> Tuple[DataLoader, DataLoader]:
     if train_valid_ratio < 0 or train_valid_ratio > 1:
         raise ValueError(f"Invalid train_valid_ratio = {train_valid_ratio} -> should be in [0, 1]")
 
@@ -85,7 +86,9 @@ def load_training_set_bibtex(path_data: str, path_save: str, use_cuda: bool, bat
     return train_loader, valid_loader
 
 
-def load_test_set_bibtex(path_data: str, path_save: str, use_cuda: bool) -> DataLoader:
+def load_test_set_bibtex(
+        path_data: str, path_save: str, use_cuda: bool
+) -> DataLoader:
     print('Loading Test set...')
     test_labels, test_inputs, txt_labels, txt_inputs = get_bibtex(path_data, use_train=False)
     test_inputs = normalize_inputs(test_inputs, path_save)

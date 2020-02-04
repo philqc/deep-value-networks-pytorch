@@ -1,7 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import pickle
 import torchvision
 from typing import Optional, List
 
@@ -22,7 +20,7 @@ def show_img(img, black_and_white=True, title: Optional[str] = None):
     plt.show()
 
 
-def save_img(img, path_to_save, black_and_white=True):
+def save_img(img, path_to_save: str, black_and_white=True):
     np_img = img.numpy()
     np_img = np.transpose(np_img, (1, 2, 0))
     if black_and_white:
@@ -31,7 +29,7 @@ def save_img(img, path_to_save, black_and_white=True):
         plt.imsave(path_to_save + ".jpg", np_img)
 
 
-def save_grid_imgs(input_imgs, path_to_save, black_and_white=True):
+def save_grid_imgs(input_imgs, path_to_save: str, black_and_white=True):
     img = torchvision.utils.make_grid(input_imgs, nrow=8)
     save_img(img, path_to_save, black_and_white)
 
@@ -70,67 +68,4 @@ def plot_results(str_score: str, train_loss: List, valid_loss: List,
         ax2.legend()
 
     ax1.legend()
-    plt.show()
-
-
-def plot_aggregate_results(results_path, iou, add_title=''):
-    """
-       Parameters:
-       ----------
-       iou: bool
-         if true: print IOU, else print F1 Score
-    """
-
-    str_score = 'IOU' if iou else 'F1 Score'
-
-    array_results = []
-    for filename in os.listdir(results_path):
-        if filename.endswith('.pkl'):
-            with open(os.path.join(results_path, filename), 'rb') as fin:
-                array_results.append(pickle.load(fin))
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-    ax1.set_title('Validation Loss ' + add_title)
-    ax1.set_ylabel('loss')
-    ax1.set_xlabel('epochs')
-    ax2.set_title('Validation ' + str_score + ' ' + add_title)
-    ax2.set_ylabel(str_score)
-    ax2.set_xlabel('epochs')
-
-    # max number of epochs
-    max_ep = 375
-
-    for res in array_results:
-
-        if res['name'] == 'SPEN_bibtex':
-            res['name'] = 'SPEN'
-
-        label = res['name']
-
-        # ax1.plot(res['loss_train'][:max_ep], label=label)
-        if res['name'] != 'SPEN':
-            ax1.plot(res['loss_valid'][:max_ep], label=label)
-
-        if iou:
-            ax2.plot(res['IOU_valid'][:max_ep], label=label)
-        else:
-            ax2.plot(res['f1_valid'][:max_ep], label=label)
-
-    ax1.legend()
-    ax2.legend()
-    plt.show()
-
-
-def plot_gradients(norm_grad, title):
-    if len(norm_grad) == 0:
-        print('No norm of gradients accumulated for {}'.format(title))
-        return 0
-
-    for i in range(len(norm_grad)):
-        if i == 0 or (i + 1) % 30 == 0:
-            plt.plot(norm_grad[i], label='{}'.format(i))
-    plt.ylabel('Gradient norm')
-    plt.xlabel('Steps')
-    plt.title(title)
-    plt.legend()
     plt.show()

@@ -37,7 +37,7 @@ Dataset available at https://avaminzhang.wordpress.com/2012/12/07/%E3%80%90datas
 
 | Model              | Ours | Paper  |
 | -------------------|:----:|:------:|
-| FCN                | 71   | 78.6   |
+| FCN                | 74.6   | 78.6   |
 | SPEN               | 73 |  N/A   |
 | DVN + Ground Truth | 76 |  76.7   |
 | DVN + Adversarial  | 73 | 84.1   |
