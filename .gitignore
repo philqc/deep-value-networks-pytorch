@@ -1,9 +1,9 @@
-Image_Segmentation/pred/
-Image_Segmentation/results/
-Image_Tagging/annotations/
-Image_Tagging/mirflickr25k.zip
-Image_Tagging/mirflickr25k_annotations_v080.zip
-Image_Tagging/mirflickr25k/
+src/image_segmentation/pred/
+src/image_segmentation/results/
+src/image_tagging/annotations/
+src/image_tagging/mirflickr25k.zip
+src/image_tagging/mirflickr25k_annotations_v080.zip
+src/image_tagging/mirflickr25k/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
